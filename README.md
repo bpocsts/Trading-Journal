@@ -1,16 +1,331 @@
-# React + Vite
+# Trading Journal
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+[![React](https://img.shields.io/badge/React-19-20232A?logo=react)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite)](https://vite.dev/)
+[![Firebase](https://img.shields.io/badge/Firebase-Auth%20%7C%20Firestore%20%7C%20Storage-FFCA28?logo=firebase&logoColor=black)](https://firebase.google.com/)
+[![ESLint](https://img.shields.io/badge/ESLint-Configured-4B32C3?logo=eslint)](https://eslint.org/)
 
-Currently, two official plugins are available:
+A bilingual trading journal built with React, Vite, and Firebase for logging executions, reviewing performance, and spotting patterns in your trading behavior.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What This App Does
 
-## React Compiler
+This project is a discretionary trading journal with two working modes:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `Live mode` using Firebase Authentication and Firestore
+- `Demo mode` for trying the full UI without signing in
 
-## Expanding the ESLint configuration
+It is designed to help traders:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- record trades with execution details
+- track account balance and currency display
+- review performance through a dashboard
+- filter and inspect trade history
+- spot behavior patterns such as FOMO, over-risking, and strong sessions
+
+## Current Feature Set
+
+### Dashboard
+
+The dashboard is the main review surface and currently includes:
+
+- `4 summary cards`
+  - Total Trades
+  - Win Rate
+  - Total Profit
+  - Average RR
+- `Equity Curve`
+  - cumulative profit over time
+- `Analytics`
+  - best trading session
+  - timeframe performance
+  - strategy performance
+- `AI Insight cards`
+  - lightweight rule-based insights from journal data
+- `Tag Analysis`
+  - quick read on tag-level win/loss tendencies
+- `Recent Trades`
+  - last few executions for fast review
+
+### Trade Logging
+
+You can log trades with:
+
+- date and time
+- pair
+- buy / sell direction
+- entry / stop loss / take profit
+- PnL
+- lot size
+- risk percent
+- strategy
+- session
+- timeframe
+- emotion
+- followed plan
+- tags
+- notes
+
+The form also calculates RR automatically from entry, stop loss, and take profit.
+
+### History
+
+The history view supports:
+
+- filter by pair
+- filter by result
+- filter by strategy
+- trade detail modal
+- trade deletion
+
+When filters are active in live mode, the app falls back to client-side filtering to avoid Firestore composite-index friction for the current scope of the project.
+
+### Auth and User State
+
+- register with email/password
+- login with email/password
+- automatic profile document creation
+- faster post-auth loading flow
+- Firebase-ready fallback messaging when config is missing
+
+### Profile and Preferences
+
+- account balance controls
+  - set
+  - add
+  - subtract
+  - clear
+- currency display switcher
+  - `USD`
+  - `THB`
+  - `EUR`
+  - `CENT`
+- Thai / English language toggle
+
+## Live Mode vs Demo Mode
+
+| Mode | What it uses | Purpose |
+|---|---|---|
+| `Live` | Firebase Auth + Firestore | Real user data and persistence |
+| `Demo` | Local demo dataset | Quick exploration without setup |
+
+Demo mode mirrors the major product flows so the UI can be reviewed even before Firebase is fully configured.
+
+## Tech Stack
+
+| Layer | Tools |
+|---|---|
+| Frontend | React 19, React DOM |
+| Build tool | Vite 8 |
+| Backend services | Firebase Auth, Firestore, Firebase Storage |
+| Styling | Custom CSS |
+| Linting | ESLint |
+
+## Project Structure
+
+```txt
+src/
+  assets/
+  hooks/
+    useAuth.js
+    useTrades.js
+  services/
+    authService.js
+    firebase.js
+    tradeService.js
+  utils/
+    demoData.js
+    helpers.js
+  App.jsx
+  App.css
+  index.css
+  main.jsx
+```
+
+### Key Files
+
+- [`src/App.jsx`](./src/App.jsx)
+  Main application shell, page routing, dashboard UI, auth UI, add-trade form, history view, and modal flow.
+
+- [`src/hooks/useAuth.js`](./src/hooks/useAuth.js)
+  Resolves Firebase auth state, handles loading, and refreshes the Firestore user profile.
+
+- [`src/hooks/useTrades.js`](./src/hooks/useTrades.js)
+  Loads trades, supports pagination, demo-mode behavior, add/delete flow, and filtered history behavior.
+
+- [`src/services/authService.js`](./src/services/authService.js)
+  Auth helpers for register, login, logout, profile creation, and preference updates.
+
+- [`src/services/tradeService.js`](./src/services/tradeService.js)
+  Firestore persistence for trades, monthly stats, and account summary updates.
+
+- [`src/utils/helpers.js`](./src/utils/helpers.js)
+  Analytics helpers, formatting utilities, dashboard aggregations, currency metadata, and demo-safe tag normalization.
+
+- [`src/utils/demoData.js`](./src/utils/demoData.js)
+  Local demo dataset used when the app runs in demo mode.
+
+## Data Shape
+
+### User document
+
+The app expects a user profile document under:
+
+```txt
+users/{uid}
+```
+
+Typical fields:
+
+- `displayName`
+- `email`
+- `totalTrades`
+- `winCount`
+- `lossCount`
+- `beCount`
+- `totalProfit`
+- `avgRR`
+- `avgRisk`
+- `accountBalance`
+- `currencyCode`
+
+### Trade document
+
+Trades are stored under:
+
+```txt
+users/{uid}/trades/{tradeId}
+```
+
+Typical fields include:
+
+- `date`
+- `pair`
+- `type`
+- `entry`
+- `sl`
+- `tp`
+- `lot`
+- `riskPercent`
+- `rr`
+- `result`
+- `pnl`
+- `strategy`
+- `session`
+- `timeframe`
+- `emotion`
+- `followPlan`
+- `tags`
+- `note`
+
+### Monthly summary
+
+Monthly aggregates are written to:
+
+```txt
+users/{uid}/stats/{yyyy-mm}
+```
+
+## Getting Started
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Start the dev server
+
+```bash
+npm run dev
+```
+
+### 3. Build for production
+
+```bash
+npm run build
+```
+
+### 4. Preview the production build
+
+```bash
+npm run preview
+```
+
+## Firebase Setup
+
+Firebase config is currently defined directly in:
+
+```txt
+src/services/firebase.js
+```
+
+To use live mode:
+
+1. Create a Firebase project
+2. Enable `Authentication > Sign-in method > Email/Password`
+3. Create a Firestore database
+4. Publish security rules
+5. Confirm the config in `src/services/firebase.js`
+
+### Suggested Firestore Rules
+
+```txt
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /trades/{tradeId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      match /stats/{statId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+  }
+}
+```
+
+## Notes and Tradeoffs
+
+- Firebase config is still committed directly in `src/services/firebase.js`
+- moving config to `.env` would be a better production setup
+- the current AI Insight section is rule-based, not backed by an LLM
+- screenshot upload support exists in the service layer, but is not yet surfaced in the main UI
+- there is a demo-first path in the product so UX work can continue even when backend setup is incomplete
+
+## Verification
+
+The project has been verified with:
+
+```bash
+npm run lint
+npm run build
+```
+
+## Roadmap Ideas
+
+- move Firebase config to environment variables
+- add better chart interaction and date-range filters
+- support screenshot uploads in the UI
+- add richer trade history filters
+- expand AI insights beyond rule-based heuristics
+- improve mobile navigation patterns further
+
+## Status
+
+Working prototype with:
+
+- Firebase auth
+- Firestore-backed trades
+- bilingual UI
+- responsive layout
+- demo mode
+- dashboard analytics
+- trade history and deletion
+
+---
+
+If you're using this repo as a base for a personal journal or prop-firm review tool, the current architecture is a good foundation for adding stricter stats, richer charts, and deeper behavior analytics.
