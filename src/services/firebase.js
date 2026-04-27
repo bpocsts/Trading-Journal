@@ -39,10 +39,10 @@ export async function getFirebaseServices() {
           firestoreModule,
           storageModule,
         ] = await Promise.all([
-          import(/* @vite-ignore */ 'firebase/app'),
-          import(/* @vite-ignore */ 'firebase/auth'),
-          import(/* @vite-ignore */ 'firebase/firestore'),
-          import(/* @vite-ignore */ 'firebase/storage'),
+          import('firebase/app'),
+          import('firebase/auth'),
+          import('firebase/firestore'),
+          import('firebase/storage'),
         ])
 
         const app = appModule.initializeApp(firebaseConfig)
