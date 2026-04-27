@@ -1,18 +1,29 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { useAuth } from './hooks/useAuth'
 import { useTrades } from './hooks/useTrades'
-import { loginUser, logoutUser, registerUser } from './services/authService'
-import { DEMO_SUMMARY } from './utils/demoData'
 import {
+  loginUser,
+  logoutUser,
+  registerUser,
+  updateUserAccountBalance,
+  updateUserPreferences,
+} from './services/authService'
+import { DEMO_SUMMARY, DEMO_TRADES } from './utils/demoData'
+import {
+  buildDashboardAnalytics,
   calcRR,
-  computeStats,
+  CURRENCY_OPTIONS,
+  formatDate,
+  formatMoney,
   formatPnl,
   formatRR,
-  formatUSD,
+  getCurrencyMeta,
+  normalizeTags,
   PAIR_EMOJI,
   PAIRS,
   SESSIONS,
+  TIMEFRAMES,
   STRATEGIES,
   EMOTIONS,
 } from './utils/helpers'
@@ -66,6 +77,7 @@ const copy = {
       demoEnabled: 'Demo mode enabled',
       tradeSaved: 'Trade saved',
       tradeDeleted: 'Trade deleted',
+      balanceUpdated: 'Account balance updated',
     },
     greeting: {
       morning: 'Good morning',
@@ -74,31 +86,72 @@ const copy = {
     },
     sidebar: {
       accountBalance: 'Account balance',
+      currency: 'Currency',
       netLoadedTrades: 'net on loaded trades',
       demoMode: 'Demo mode',
+      set: 'Set',
+      add: 'Add',
+      subtract: 'Subtract',
+      clear: 'Clear',
+      amountPlaceholder: 'Amount',
+      apply: 'Apply',
+      cancel: 'Cancel',
+      editorTitle: 'Manage balance',
     },
     dashboard: {
       loadedTrades: (count) => `${count} trades loaded into the current view`,
       firebaseBanner:
         'Firebase is not fully connected yet. Demo mode remains available while you finish setup.',
-      netPnl: 'Net PnL',
-      loadedTradesOnly: 'Loaded trades only',
+      overview: 'Performance overview',
+      overviewSubtitle: 'See the state of your edge in a few seconds.',
+      totalTrades: 'Total Trades',
       winRate: 'Win Rate',
-      winsLosses: (wins, losses) => `${wins} wins / ${losses} losses`,
-      averageRr: 'Average RR',
-      breakEvenTrades: (count) => `Break-even trades: ${count}`,
-      averageRisk: 'Average Risk',
-      perRecordedPosition: 'Per recorded position',
-      strategyMix: 'Strategy mix',
-      sessionPnl: 'Session PnL',
-      executionNotes: 'Execution notes',
+      totalProfit: 'Total Profit',
+      averageRr: 'Avg RR',
+      statTradesFoot: (wins, losses, bes) => `${wins} wins / ${losses} losses / ${bes} BE`,
+      statWinRateStrong: 'Healthy strike rate',
+      statWinRateWeak: 'Needs review',
+      statWinRateMid: 'Mixed quality',
+      statProfitFoot: 'Across loaded trades',
+      statAvgRrStrong: 'Reward profile looks solid',
+      statAvgRrWeak: 'Low reward for the risk taken',
+      equityCurve: 'Equity Curve',
+      equityCurveSubtitle: 'Cumulative profit across your trade timeline.',
+      risingCurve: 'Curve is rising',
+      unstableCurve: 'Curve is choppy',
+      analyticsTitle: 'Analytics',
+      analyticsSubtitle: 'Find where your edge is actually showing up.',
+      bestTradingSession: 'Best Trading Session',
+      timeframePerformance: 'Timeframe Performance',
+      strategyPerformance: 'Strategy Performance',
+      bestSessionLabel: 'Best session',
+      bestTimeframeLabel: 'Best timeframe',
+      noSessionData: 'No session data yet.',
+      noTimeframeData: 'Add timeframe data to compare execution quality.',
+      noStrategyData: 'No strategy data yet.',
+      aiInsights: 'AI Insight',
+      aiInsightSubtitle: 'Short, sharp reads on what your journal is saying.',
+      noInsights: 'Not enough signal yet. Add a few more trades.',
+      tagAnalysis: 'Tag Analysis',
+      tagInsight: (tag, winRate) => `${tag} wins ${winRate.toFixed(0)}%`,
+      tagLossInsight: (tag, lossRate) => `${tag} loses ${lossRate.toFixed(0)}%`,
+      noTags: 'No tags yet.',
       recentTrades: 'Recent trades',
+      recentTradesSubtitle: 'Latest executions worth reviewing.',
       openHistory: 'Open history',
       loadingTrades: 'Loading trades...',
       noTradesYet: 'No trades yet',
       addFirstSetup: 'Add your first setup to start building stats.',
-      noSessions: 'No sessions to compare yet.',
-      noStrategy: 'No trades yet.',
+      noRecentTrades: 'No recent trades to review.',
+      sessionWinRate: 'Win rate',
+      sessionProfit: 'Profit',
+      timeframeAvgRr: 'Avg RR',
+      strategyProfit: 'Profit',
+      insightEmotionLoss: (emotion, lossRate) => `${emotion} trades lose ${lossRate.toFixed(0)}% of the time.`,
+      insightOverRisk: (rate) => `You over-risk on ${rate.toFixed(0)}% of trades.`,
+      insightBestSession: (session) => `${session} is your strongest session right now.`,
+      insightDiscipline: (lossRate) => `Trades outside your plan lose ${lossRate.toFixed(0)}% of the time.`,
+      insightAvgRrLow: (avgRR) => `Average RR is only ${avgRR.toFixed(2)}. Push for cleaner reward.`,
     },
     addTrade: {
       title: 'Add trade',
@@ -116,9 +169,12 @@ const copy = {
       riskPercent: 'Risk %',
       strategy: 'Strategy',
       session: 'Session',
+      timeframe: 'Timeframe',
       emotion: 'Emotion',
       followedPlan: 'Followed plan',
+      tags: 'Tags',
       notes: 'Notes',
+      tagsPlaceholder: 'london, news, breakout',
       notesPlaceholder:
         'Why this setup made sense, what you saw, and what to review later.',
       calculatedRr: 'Calculated RR',
@@ -155,6 +211,8 @@ const copy = {
       rrPnl: 'RR / PnL',
       strategy: 'Strategy',
       session: 'Session',
+      timeframe: 'Timeframe',
+      tags: 'Tags',
       emotionAndNotes: 'Emotion and notes',
       noNotes: 'No notes added.',
       deleteTrade: 'Delete trade',
@@ -208,6 +266,7 @@ const copy = {
       demoEnabled: 'เปิดโหมดเดโมแล้ว',
       tradeSaved: 'บันทึกรายการเทรดแล้ว',
       tradeDeleted: 'ลบรายการเทรดแล้ว',
+      balanceUpdated: 'อัปเดตยอดเงินแล้ว',
     },
     greeting: {
       morning: 'สวัสดีตอนเช้า',
@@ -216,31 +275,72 @@ const copy = {
     },
     sidebar: {
       accountBalance: 'ยอดเงินในบัญชี',
+      currency: 'สกุลเงิน',
       netLoadedTrades: 'สุทธิจากรายการที่แสดง',
       demoMode: 'โหมดเดโม',
+      set: 'ตั้งยอด',
+      add: 'เพิ่ม',
+      subtract: 'ลด',
+      clear: 'ล้าง',
+      amountPlaceholder: 'จำนวนเงิน',
+      apply: 'ยืนยัน',
+      cancel: 'ยกเลิก',
+      editorTitle: 'จัดการยอดเงิน',
     },
     dashboard: {
       loadedTrades: (count) => `โหลดรายการเทรดในมุมมองนี้ ${count} รายการ`,
       firebaseBanner:
         'Firebase ยังเชื่อมต่อไม่ครบ โหมดเดโมยังพร้อมให้ใช้งานระหว่างตั้งค่าระบบ',
-      netPnl: 'กำไร/ขาดทุนสุทธิ',
-      loadedTradesOnly: 'คำนวณจากรายการที่โหลดอยู่',
+      overview: 'ภาพรวมผลงาน',
+      overviewSubtitle: 'ดูว่าการเทรดของคุณเป็นอย่างไรได้ในไม่กี่วินาที',
+      totalTrades: 'จำนวนไม้ทั้งหมด',
       winRate: 'อัตราชนะ',
-      winsLosses: (wins, losses) => `ชนะ ${wins} / แพ้ ${losses}`,
+      totalProfit: 'กำไรสุทธิ',
       averageRr: 'ค่า RR เฉลี่ย',
-      breakEvenTrades: (count) => `จำนวน BE: ${count}`,
-      averageRisk: 'ความเสี่ยงเฉลี่ย',
-      perRecordedPosition: 'ต่อหนึ่งออเดอร์ที่บันทึก',
-      strategyMix: 'สัดส่วนกลยุทธ์',
-      sessionPnl: 'กำไร/ขาดทุนตามช่วงเวลา',
-      executionNotes: 'ภาพรวมการเทรด',
+      statTradesFoot: (wins, losses, bes) => `ชนะ ${wins} / แพ้ ${losses} / BE ${bes}`,
+      statWinRateStrong: 'อัตราชนะอยู่ในโซนดี',
+      statWinRateWeak: 'ควรกลับไปทบทวน',
+      statWinRateMid: 'คุณภาพยังแกว่งอยู่',
+      statProfitFoot: 'คำนวณจากรายการที่โหลดอยู่',
+      statAvgRrStrong: 'Reward ต่อความเสี่ยงดูดี',
+      statAvgRrWeak: 'Reward ยังต่ำเมื่อเทียบกับความเสี่ยง',
+      equityCurve: 'เส้น Equity Curve',
+      equityCurveSubtitle: 'กำไรสะสมตามลำดับเวลาของการเทรด',
+      risingCurve: 'กราฟกำลังไต่ขึ้น',
+      unstableCurve: 'กราฟยังแกว่งและไม่เสถียร',
+      analyticsTitle: 'การวิเคราะห์',
+      analyticsSubtitle: 'ดูให้ชัดว่าความได้เปรียบของคุณอยู่ตรงไหน',
+      bestTradingSession: 'ช่วงเวลาที่ดีที่สุด',
+      timeframePerformance: 'ผลงานตาม Timeframe',
+      strategyPerformance: 'ผลงานตามกลยุทธ์',
+      bestSessionLabel: 'ช่วงเวลาที่เด่นที่สุด',
+      bestTimeframeLabel: 'Timeframe ที่เด่นที่สุด',
+      noSessionData: 'ยังไม่มีข้อมูล session',
+      noTimeframeData: 'เพิ่มข้อมูล timeframe เพื่อเทียบคุณภาพการเข้าเทรด',
+      noStrategyData: 'ยังไม่มีข้อมูลกลยุทธ์',
+      aiInsights: 'AI Insight',
+      aiInsightSubtitle: 'สรุปสั้น คม และใช้ได้จริงจากสมุดบันทึกของคุณ',
+      noInsights: 'ข้อมูลยังไม่พอให้สรุป insight ชัด ๆ',
+      tagAnalysis: 'การวิเคราะห์แท็ก',
+      tagInsight: (tag, winRate) => `${tag} ชนะ ${winRate.toFixed(0)}%`,
+      tagLossInsight: (tag, lossRate) => `${tag} แพ้ ${lossRate.toFixed(0)}%`,
+      noTags: 'ยังไม่มีแท็ก',
       recentTrades: 'รายการล่าสุด',
+      recentTradesSubtitle: 'ดูไม้ล่าสุดที่ควรหยิบมาทบทวน',
       openHistory: 'เปิดประวัติ',
       loadingTrades: 'กำลังโหลดรายการ...',
       noTradesYet: 'ยังไม่มีรายการเทรด',
       addFirstSetup: 'เพิ่มรายการแรกเพื่อเริ่มสร้างสถิติของคุณ',
-      noSessions: 'ยังไม่มีข้อมูลให้เทียบตามช่วงเวลา',
-      noStrategy: 'ยังไม่มีรายการเทรด',
+      noRecentTrades: 'ยังไม่มีรายการล่าสุดให้ดู',
+      sessionWinRate: 'อัตราชนะ',
+      sessionProfit: 'กำไร',
+      timeframeAvgRr: 'ค่า RR เฉลี่ย',
+      strategyProfit: 'กำไร',
+      insightEmotionLoss: (emotion, lossRate) => `${emotion} ทำให้คุณแพ้ ${lossRate.toFixed(0)}% ของไม้ในกลุ่มนี้`,
+      insightOverRisk: (rate) => `คุณ over-risk อยู่ ${rate.toFixed(0)}% ของไม้ทั้งหมด`,
+      insightBestSession: (session) => `${session} คือช่วงเวลาที่ทำกำไรดีที่สุดตอนนี้`,
+      insightDiscipline: (lossRate) => `ไม้ที่ไม่ทำตามแผนแพ้ ${lossRate.toFixed(0)}%`,
+      insightAvgRrLow: (avgRR) => `ค่า RR เฉลี่ยอยู่ที่ ${avgRR.toFixed(2)} ยังควรหา reward ที่คมกว่านี้`,
     },
     addTrade: {
       title: 'เพิ่มรายการเทรด',
@@ -258,9 +358,12 @@ const copy = {
       riskPercent: 'ความเสี่ยง %',
       strategy: 'กลยุทธ์',
       session: 'ช่วงเวลา',
+      timeframe: 'Timeframe',
       emotion: 'อารมณ์',
       followedPlan: 'ทำตามแผนหรือไม่',
+      tags: 'แท็ก',
       notes: 'บันทึกเพิ่มเติม',
+      tagsPlaceholder: 'london, news, breakout',
       notesPlaceholder: 'เหตุผลที่เข้าเทรด สิ่งที่เห็น และสิ่งที่ควรกลับมาทบทวน',
       calculatedRr: 'ค่า RR ที่คำนวณได้',
       savingTrade: 'กำลังบันทึกรายการ...',
@@ -296,6 +399,8 @@ const copy = {
       rrPnl: 'RR / PnL',
       strategy: 'กลยุทธ์',
       session: 'ช่วงเวลา',
+      timeframe: 'Timeframe',
+      tags: 'แท็ก',
       emotionAndNotes: 'อารมณ์และบันทึก',
       noNotes: 'ยังไม่มีบันทึกเพิ่มเติม',
       deleteTrade: 'ลบรายการนี้',
@@ -321,6 +426,18 @@ const labelMaps = {
     Tokyo: { en: 'Tokyo', th: 'โตเกียว' },
     Sydney: { en: 'Sydney', th: 'ซิดนีย์' },
     'London/NY Overlap': { en: 'London/NY Overlap', th: 'ช่วงทับซ้อนลอนดอน/นิวยอร์ก' },
+  },
+  sessionBuckets: {
+    Asia: { en: 'Asia', th: 'เอเชีย' },
+    London: { en: 'London', th: 'ลอนดอน' },
+    'New York': { en: 'New York', th: 'นิวยอร์ก' },
+    Other: { en: 'Other', th: 'อื่น ๆ' },
+  },
+  timeframes: {
+    M5: { en: 'M5', th: 'M5' },
+    M15: { en: 'M15', th: 'M15' },
+    H1: { en: 'H1', th: 'H1' },
+    H4: { en: 'H4', th: 'H4' },
   },
   emotions: {
     Calm: { en: 'Calm', th: 'นิ่ง' },
@@ -356,8 +473,10 @@ function createInitialTradeForm() {
     pnl: '250.00',
     strategy: 'SMC',
     session: 'London',
+    timeframe: 'M15',
     emotion: 'Calm',
     followPlan: 'Yes',
+    tags: 'london, setup-a',
     note: '',
   }
 }
@@ -385,6 +504,66 @@ function getTranslatedLabel(group, value, language) {
   return labelMaps[group]?.[value]?.[language] || value
 }
 
+function buildChartPath(points, width, height) {
+  if (!points.length) return ''
+
+  const max = Math.max(...points.map((point) => point.value))
+  const min = Math.min(...points.map((point) => point.value))
+  const range = max - min || 1
+
+  return points
+    .map((point, index) => {
+      const x = points.length === 1 ? width / 2 : (index / (points.length - 1)) * width
+      const y = height - ((point.value - min) / range) * height
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
+    })
+    .join(' ')
+}
+
+function buildAreaPath(points, width, height) {
+  if (!points.length) return ''
+
+  const max = Math.max(...points.map((point) => point.value))
+  const min = Math.min(...points.map((point) => point.value))
+  const range = max - min || 1
+
+  const coordinates = points.map((point, index) => {
+    const x = points.length === 1 ? width / 2 : (index / (points.length - 1)) * width
+    const y = height - ((point.value - min) / range) * height
+    return `${x.toFixed(2)} ${y.toFixed(2)}`
+  })
+
+  return `M 0 ${height} L ${coordinates.join(' L ')} L ${width} ${height} Z`
+}
+
+function AnimatedMetric({ value, format, className }) {
+  const [displayValue, setDisplayValue] = useState(value)
+  const previousValueRef = useRef(value)
+
+  useEffect(() => {
+    const duration = 650
+    const start = previousValueRef.current
+    const delta = value - start
+    let frameId = 0
+    const startAt = performance.now()
+
+    const tick = (now) => {
+      const progress = Math.min((now - startAt) / duration, 1)
+      const eased = 1 - (1 - progress) ** 3
+      setDisplayValue(start + delta * eased)
+      if (progress < 1) frameId = window.requestAnimationFrame(tick)
+    }
+
+    frameId = window.requestAnimationFrame(tick)
+    return () => {
+      previousValueRef.current = value
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [value])
+
+  return <div className={className}>{format(displayValue)}</div>
+}
+
 function App() {
   const { user, profile, loading, authError, firebaseReady, refreshProfile } = useAuth()
   const [language, setLanguage] = useState('en')
@@ -399,6 +578,11 @@ function App() {
   const [toast, setToast] = useState('')
   const [selectedTrade, setSelectedTrade] = useState(null)
   const [submittingTrade, setSubmittingTrade] = useState(false)
+  const [demoAccountBalance, setDemoAccountBalance] = useState(
+    DEMO_SUMMARY.accountBalance + buildDashboardAnalytics(DEMO_TRADES).totalProfit,
+  )
+  const [demoCurrencyCode, setDemoCurrencyCode] = useState('USD')
+  const [balanceEditor, setBalanceEditor] = useState({ mode: '', amount: '' })
 
   const t = copy[language]
   const navItems = useMemo(
@@ -430,14 +614,17 @@ function App() {
     [tradeForm.entry, tradeForm.sl, tradeForm.tp],
   )
 
-  const stats = useMemo(() => computeStats(trades), [trades])
+  const dashboardStats = useMemo(() => buildDashboardAnalytics(trades), [trades])
 
   const accountBalance = useMemo(() => {
-    const baseBalance = isDemo
-      ? DEMO_SUMMARY.accountBalance
-      : profile?.accountBalance || DEMO_SUMMARY.accountBalance
-    return baseBalance + stats.totalPnl
-  }, [isDemo, profile?.accountBalance, stats.totalPnl])
+    if (isDemo) return demoAccountBalance
+    return profile?.accountBalance ?? DEMO_SUMMARY.accountBalance
+  }, [demoAccountBalance, isDemo, profile?.accountBalance])
+
+  const currencyCode = useMemo(() => {
+    if (isDemo) return demoCurrencyCode
+    return profile?.currencyCode || 'USD'
+  }, [demoCurrencyCode, isDemo, profile?.currencyCode])
 
   const summary = useMemo(() => {
     const displayName =
@@ -447,18 +634,27 @@ function App() {
     return {
       displayName,
       email,
-      totalTrades: stats.total,
-      winCount: stats.wins,
-      lossCount: stats.losses,
-      beCount: stats.bes,
-      totalProfit: stats.totalPnl,
-      avgRR: stats.avgRR,
-      avgRisk: stats.avgRisk,
-      winRate: stats.total ? (stats.wins / stats.total) * 100 : 0,
+      totalTrades: dashboardStats.totalTrades,
+      winCount: dashboardStats.wins,
+      lossCount: dashboardStats.losses,
+      beCount: dashboardStats.bes,
+      totalProfit: dashboardStats.totalProfit,
+      avgRR: dashboardStats.avgRR,
+      avgRisk: dashboardStats.avgRisk,
+      winRate: dashboardStats.totalTrades ? (dashboardStats.wins / dashboardStats.totalTrades) * 100 : 0,
     }
-  }, [isDemo, profile, stats, t.general.traderFallback, user?.email])
+  }, [dashboardStats, isDemo, profile, t.general.traderFallback, user?.email])
 
-  const recentTrades = useMemo(() => trades.slice(0, 5), [trades])
+  const recentTrades = dashboardStats.recentTrades
+  const equityCurvePath = useMemo(
+    () => buildChartPath(dashboardStats.equityCurve, 100, 100),
+    [dashboardStats.equityCurve],
+  )
+  const equityAreaPath = useMemo(
+    () => buildAreaPath(dashboardStats.equityCurve, 100, 100),
+    [dashboardStats.equityCurve],
+  )
+  const currencySymbol = getCurrencyMeta(currencyCode).symbol
 
   async function handleAuthSubmit(event) {
     event.preventDefault()
@@ -485,6 +681,7 @@ function App() {
     setIsDemo(true)
     setActivePage('dashboard')
     setSelectedTrade(null)
+    setBalanceEditor({ mode: '', amount: '' })
     setToast(t.toasts.demoEnabled)
   }
 
@@ -492,11 +689,62 @@ function App() {
     if (isDemo) {
       setIsDemo(false)
       setSelectedTrade(null)
+      setBalanceEditor({ mode: '', amount: '' })
       return
     }
 
     await logoutUser()
     setSelectedTrade(null)
+  }
+
+  function openBalanceEditor(mode) {
+    setBalanceEditor({ mode, amount: '' })
+  }
+
+  function closeBalanceEditor() {
+    setBalanceEditor({ mode: '', amount: '' })
+  }
+
+  async function handleCurrencyChange(nextCurrencyCode) {
+    try {
+      if (isDemo) {
+        setDemoCurrencyCode(nextCurrencyCode)
+      } else if (user?.uid) {
+        await updateUserPreferences(user.uid, { currencyCode: nextCurrencyCode })
+        await refreshProfile(user.uid)
+      }
+    } catch (error) {
+      setToast(error.message)
+    }
+  }
+
+  async function handleBalanceSubmit(event) {
+    event.preventDefault()
+
+    const rawAmount = Number(balanceEditor.amount)
+    const amount = Number.isFinite(rawAmount) ? rawAmount : 0
+
+    let nextBalance = accountBalance
+    if (balanceEditor.mode === 'set') nextBalance = Math.max(amount, 0)
+    if (balanceEditor.mode === 'add') nextBalance = accountBalance + Math.max(amount, 0)
+    if (balanceEditor.mode === 'subtract') {
+      nextBalance = Math.max(accountBalance - Math.max(amount, 0), 0)
+    }
+    if (balanceEditor.mode === 'clear') nextBalance = 0
+
+    try {
+      if (isDemo) {
+        setDemoAccountBalance(parseFloat(nextBalance.toFixed(2)))
+      } else if (user?.uid) {
+        await updateUserAccountBalance(user.uid, nextBalance)
+        await refreshProfile(user.uid)
+      }
+
+      closeBalanceEditor()
+      setToast(t.toasts.balanceUpdated)
+    } catch (error) {
+      setToast(error.message)
+    }
   }
 
   async function handleTradeSubmit(event) {
@@ -513,11 +761,14 @@ function App() {
         riskPercent: Number(tradeForm.riskPercent),
         rr,
         pnl: Number(tradeForm.pnl),
+        tags: normalizeTags(tradeForm.tags),
       }
 
       await addTrade(payload)
 
-      if (!isDemo && user?.uid) {
+      if (isDemo) {
+        setDemoAccountBalance((current) => parseFloat((current + payload.pnl).toFixed(2)))
+      } else if (user?.uid) {
         await refreshProfile(user.uid)
       }
 
@@ -537,7 +788,11 @@ function App() {
     try {
       await removeTrade(selectedTrade.id, selectedTrade)
 
-      if (!isDemo && user?.uid) {
+      if (isDemo) {
+        setDemoAccountBalance((current) =>
+          parseFloat(Math.max(current - (selectedTrade.pnl || 0), 0).toFixed(2)),
+        )
+      } else if (user?.uid) {
         await refreshProfile(user.uid)
       }
 
@@ -689,10 +944,73 @@ function App() {
           <div className="sidebar-bottom">
             <div className="account-bal">
               <div className="acc-label">{t.sidebar.accountBalance}</div>
-              <div className="acc-value">{formatUSD(accountBalance)}</div>
+              <div className="acc-value">{formatMoney(accountBalance, currencyCode)}</div>
               <div className={`acc-change ${summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                {formatPnl(summary.totalProfit)} {t.sidebar.netLoadedTrades}
+                {formatPnl(summary.totalProfit, currencyCode)} {t.sidebar.netLoadedTrades}
               </div>
+              <label className="balance-currency-row">
+                <span className="acc-label">{t.sidebar.currency}</span>
+                <select
+                  className="form-input currency-select"
+                  value={currencyCode}
+                  onChange={(event) => handleCurrencyChange(event.target.value)}
+                >
+                  {CURRENCY_OPTIONS.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="balance-actions">
+                <button type="button" className="balance-btn" onClick={() => openBalanceEditor('set')}>
+                  {t.sidebar.set}
+                </button>
+                <button type="button" className="balance-btn" onClick={() => openBalanceEditor('add')}>
+                  {t.sidebar.add}
+                </button>
+                <button
+                  type="button"
+                  className="balance-btn"
+                  onClick={() => openBalanceEditor('subtract')}
+                >
+                  {t.sidebar.subtract}
+                </button>
+                <button
+                  type="button"
+                  className="balance-btn balance-btn-danger"
+                  onClick={() => openBalanceEditor('clear')}
+                >
+                  {t.sidebar.clear}
+                </button>
+              </div>
+              {balanceEditor.mode ? (
+                <form className="balance-editor" onSubmit={handleBalanceSubmit}>
+                  <div className="balance-editor-title">{t.sidebar.editorTitle}</div>
+                  {balanceEditor.mode !== 'clear' ? (
+                    <input
+                      className="form-input balance-input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={balanceEditor.amount}
+                      placeholder={t.sidebar.amountPlaceholder}
+                      onChange={(event) =>
+                        setBalanceEditor((current) => ({ ...current, amount: event.target.value }))
+                      }
+                      required
+                    />
+                  ) : null}
+                  <div className="balance-editor-actions">
+                    <button type="submit" className="balance-submit">
+                      {t.sidebar.apply}
+                    </button>
+                    <button type="button" className="balance-cancel" onClick={closeBalanceEditor}>
+                      {t.sidebar.cancel}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
             </div>
 
             <button type="button" className="user-row action-row" onClick={handleLogout}>
@@ -757,11 +1075,12 @@ function App() {
 
           <div className="content">
             <section className={`page ${activePage === 'dashboard' ? 'active' : ''}`}>
-              <div className="dash-main">
-                <div className="greeting">
+              <div className="dashboard-shell">
+                <div className="greeting dashboard-hero">
                   <div>
                     <h1>{summary.displayName}</h1>
                     <p>{t.dashboard.loadedTrades(summary.totalTrades || 0)}</p>
+                    <small className="hero-subcopy">{t.dashboard.overviewSubtitle}</small>
                   </div>
                   <button type="button" className="period-btn" onClick={() => loadTrades(filters, true)}>
                     {t.general.refresh}
@@ -772,173 +1091,392 @@ function App() {
                   <div className="status-banner">{t.dashboard.firebaseBanner}</div>
                 ) : null}
 
-                <div className="stats-grid">
-                  <article className="stat-card">
+                <div className="stats-grid dashboard-stats-grid">
+                  <article className="stat-card stat-card-strong">
                     <div className="stat-top">
-                      <div className="stat-label">{t.dashboard.netPnl}</div>
-                      <div className="stat-icon">$</div>
+                      <div className="stat-label">{t.dashboard.totalTrades}</div>
+                      <div className="stat-icon">#</div>
                     </div>
-                    <div className="stat-value">{formatPnl(summary.totalProfit)}</div>
-                    <div className="stat-change muted-copy">{t.dashboard.loadedTradesOnly}</div>
+                    <AnimatedMetric
+                      className="stat-value"
+                      value={summary.totalTrades}
+                      format={(value) => Math.round(value).toLocaleString('en-US')}
+                    />
+                    <div className="stat-change muted-copy">
+                      {t.dashboard.statTradesFoot(summary.winCount, summary.lossCount, summary.beCount)}
+                    </div>
                   </article>
 
-                  <article className="stat-card">
+                  <article
+                    className={`stat-card ${
+                      summary.winRate >= 60 ? 'stat-card-positive' : summary.winRate < 50 ? 'stat-card-negative' : ''
+                    }`}
+                  >
                     <div className="stat-top">
                       <div className="stat-label">{t.dashboard.winRate}</div>
                       <div className="stat-icon">%</div>
                     </div>
-                    <div className="stat-value">{summary.winRate.toFixed(1)}%</div>
+                    <AnimatedMetric
+                      className="stat-value"
+                      value={summary.winRate}
+                      format={(value) => `${value.toFixed(1)}%`}
+                    />
                     <div className="stat-change muted-copy">
-                      {t.dashboard.winsLosses(summary.winCount, summary.lossCount)}
+                      {summary.winRate >= 60
+                        ? t.dashboard.statWinRateStrong
+                        : summary.winRate < 50
+                          ? t.dashboard.statWinRateWeak
+                          : t.dashboard.statWinRateMid}
                     </div>
                   </article>
 
-                  <article className="stat-card">
+                  <article
+                    className={`stat-card ${summary.totalProfit >= 0 ? 'stat-card-positive' : 'stat-card-negative'}`}
+                  >
+                    <div className="stat-top">
+                      <div className="stat-label">{t.dashboard.totalProfit}</div>
+                      <div className="stat-icon">{currencySymbol}</div>
+                    </div>
+                    <AnimatedMetric
+                      className={`stat-value ${summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}
+                      value={summary.totalProfit}
+                      format={(value) => formatPnl(value, currencyCode)}
+                    />
+                    <div className="stat-change muted-copy">{t.dashboard.statProfitFoot}</div>
+                  </article>
+
+                  <article
+                    className={`stat-card ${summary.avgRR < 1.5 ? 'stat-card-warning' : 'stat-card-positive-soft'}`}
+                  >
                     <div className="stat-top">
                       <div className="stat-label">{t.dashboard.averageRr}</div>
                       <div className="stat-icon">R</div>
                     </div>
-                    <div className="stat-value">{formatRR(summary.avgRR || 0)}</div>
+                    <AnimatedMetric
+                      className="stat-value"
+                      value={summary.avgRR}
+                      format={(value) => value.toFixed(2)}
+                    />
                     <div className="stat-change muted-copy">
-                      {t.dashboard.breakEvenTrades(summary.beCount)}
+                      {summary.avgRR < 1.5 ? t.dashboard.statAvgRrWeak : t.dashboard.statAvgRrStrong}
                     </div>
-                  </article>
-
-                  <article className="stat-card">
-                    <div className="stat-top">
-                      <div className="stat-label">{t.dashboard.averageRisk}</div>
-                      <div className="stat-icon">!</div>
-                    </div>
-                    <div className="stat-value">{summary.avgRisk.toFixed(2)}%</div>
-                    <div className="stat-change muted-copy">{t.dashboard.perRecordedPosition}</div>
                   </article>
                 </div>
 
-                <div className="bottom-charts">
-                  <article className="small-chart-card">
-                    <div className="chart-title">{t.dashboard.strategyMix}</div>
-                    <div className="panel-stack">
-                      {Object.keys(stats.stratMap).length ? (
-                        Object.entries(stats.stratMap).map(([name, value]) => (
-                          <div className="strat-row" key={name}>
-                            <div className="strat-name">
-                              {getTranslatedLabel('strategies', name, language)}
+                <article className="dashboard-panel equity-panel">
+                  <div className="panel-header">
+                    <div>
+                      <div className="panel-eyebrow">{t.dashboard.equityCurve}</div>
+                      <h3>{t.dashboard.equityCurve}</h3>
+                      <p>{t.dashboard.equityCurveSubtitle}</p>
+                    </div>
+                    <div className="equity-summary">
+                      <span
+                        className={`equity-chip ${
+                          summary.totalProfit >= 0 ? 'equity-chip-positive' : 'equity-chip-negative'
+                        }`}
+                      >
+                        {summary.totalProfit >= 0 ? t.dashboard.risingCurve : t.dashboard.unstableCurve}
+                      </span>
+                      <strong className={summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}>
+                        {formatPnl(summary.totalProfit, currencyCode)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  {dashboardStats.equityCurve.length ? (
+                    <div className="equity-chart-wrap">
+                      <svg viewBox="0 0 100 100" className="equity-chart" preserveAspectRatio="none">
+                        <defs>
+                          <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="rgba(73, 191, 131, 0.35)" />
+                            <stop offset="100%" stopColor="rgba(73, 191, 131, 0.03)" />
+                          </linearGradient>
+                        </defs>
+                        <path d={equityAreaPath} className="equity-area" />
+                        <path d={equityCurvePath} className="equity-line" />
+                      </svg>
+                      <div className="equity-axis">
+                        <span>{formatDate(dashboardStats.equityCurve[0].date)}</span>
+                        <span>{formatDate(dashboardStats.equityCurve[dashboardStats.equityCurve.length - 1].date)}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="empty-state compact-empty">
+                      <strong>{t.dashboard.noTradesYet}</strong>
+                      <p>{t.dashboard.addFirstSetup}</p>
+                    </div>
+                  )}
+                </article>
+
+                <div className="dashboard-section-heading">
+                  <div>
+                    <h2>{t.dashboard.analyticsTitle}</h2>
+                    <p>{t.dashboard.analyticsSubtitle}</p>
+                  </div>
+                </div>
+
+                <div className="analytics-grid">
+                  <article className="dashboard-panel analytics-card">
+                    <div className="panel-header">
+                      <div>
+                        <div className="panel-eyebrow">{t.dashboard.bestSessionLabel}</div>
+                        <h3>{t.dashboard.bestTradingSession}</h3>
+                      </div>
+                      {dashboardStats.bestSession ? (
+                        <span className="panel-badge badge-positive">
+                          {getTranslatedLabel('sessionBuckets', dashboardStats.bestSession.name, language)}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="analytics-list">
+                      {dashboardStats.sessions.length ? (
+                        dashboardStats.sessions.map((session) => (
+                          <div
+                            key={session.name}
+                            className={`analytics-row ${
+                              dashboardStats.bestSession?.name === session.name ? 'analytics-row-active' : ''
+                            }`}
+                          >
+                            <div>
+                              <strong>{getTranslatedLabel('sessionBuckets', session.name, language)}</strong>
+                              <span>
+                                {t.dashboard.sessionWinRate}: {session.winRate.toFixed(1)}%
+                              </span>
                             </div>
-                            <div className="strat-bar-bg">
-                              <div
-                                className="strat-bar-fill"
-                                style={{
-                                  width: `${(value.count / summary.totalTrades) * 100 || 0}%`,
-                                  background: 'var(--accent)',
-                                }}
-                              ></div>
-                            </div>
-                            <div className="strat-pct">{value.count}</div>
+                            <strong className={session.profit >= 0 ? 'text-profit' : 'text-loss'}>
+                              {formatPnl(session.profit, currencyCode)}
+                            </strong>
                           </div>
                         ))
                       ) : (
-                        <div className="empty-state compact-empty">{t.dashboard.noStrategy}</div>
+                        <div className="empty-state compact-empty">{t.dashboard.noSessionData}</div>
                       )}
                     </div>
                   </article>
 
-                  <article className="small-chart-card">
-                    <div className="chart-title">{t.dashboard.sessionPnl}</div>
-                    <div className="panel-stack">
-                      {Object.keys(stats.sessMap).length ? (
-                        Object.entries(stats.sessMap).map(([session, pnl]) => (
-                          <div className="session-row" key={session}>
-                            <span>{getTranslatedLabel('sessions', session, language)}</span>
-                            <span className={pnl >= 0 ? 'text-profit' : 'text-loss'}>
-                              {formatPnl(pnl)}
+                  <article className="dashboard-panel analytics-card">
+                    <div className="panel-header">
+                      <div>
+                        <div className="panel-eyebrow">{t.dashboard.bestTimeframeLabel}</div>
+                        <h3>{t.dashboard.timeframePerformance}</h3>
+                      </div>
+                      {dashboardStats.bestTimeframe ? (
+                        <span className="panel-badge badge-accent">
+                          {getTranslatedLabel('timeframes', dashboardStats.bestTimeframe.name, language)}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="analytics-list">
+                      {dashboardStats.timeframes.length ? (
+                        dashboardStats.timeframes.map((timeframe) => (
+                          <div
+                            key={timeframe.name}
+                            className={`analytics-row ${
+                              dashboardStats.bestTimeframe?.name === timeframe.name ? 'analytics-row-active' : ''
+                            }`}
+                          >
+                            <div>
+                              <strong>{getTranslatedLabel('timeframes', timeframe.name, language)}</strong>
+                              <span>
+                                {t.dashboard.winRate}: {timeframe.winRate.toFixed(1)}%
+                              </span>
+                            </div>
+                            <strong>{timeframe.avgRR.toFixed(2)}R</strong>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="empty-state compact-empty">{t.dashboard.noTimeframeData}</div>
+                      )}
+                    </div>
+                  </article>
+
+                  <article className="dashboard-panel analytics-card">
+                    <div className="panel-header">
+                      <div>
+                        <div className="panel-eyebrow">{t.dashboard.strategyPerformance}</div>
+                        <h3>{t.dashboard.strategyPerformance}</h3>
+                      </div>
+                    </div>
+
+                    {dashboardStats.strategies.length ? (
+                      <div className="strategy-bars">
+                        {dashboardStats.strategies.slice(0, 5).map((strategy) => {
+                          const maxAbsProfit = Math.max(
+                            ...dashboardStats.strategies.map((item) => Math.abs(item.profit)),
+                            1,
+                          )
+                          const width = (Math.abs(strategy.profit) / maxAbsProfit) * 100
+
+                          return (
+                            <div className="strategy-bar-row" key={strategy.name}>
+                              <div className="strategy-bar-copy">
+                                <strong>{getTranslatedLabel('strategies', strategy.name, language)}</strong>
+                                <span>
+                                  {strategy.winRate.toFixed(0)}% • {strategy.avgRR.toFixed(2)}R
+                                </span>
+                              </div>
+                              <div className="strategy-bar-track">
+                                <div
+                                  className={`strategy-bar-fill ${strategy.profit >= 0 ? 'profit-fill' : 'loss-fill'}`}
+                                  style={{ width: `${Math.max(width, 8)}%` }}
+                                ></div>
+                              </div>
+                              <strong className={strategy.profit >= 0 ? 'text-profit' : 'text-loss'}>
+                                {formatPnl(strategy.profit, currencyCode)}
+                              </strong>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="empty-state compact-empty">{t.dashboard.noStrategyData}</div>
+                    )}
+                  </article>
+                </div>
+
+                <div className="dashboard-lower-grid">
+                  <article className="dashboard-panel insights-card">
+                    <div className="panel-header">
+                      <div>
+                        <div className="panel-eyebrow">{t.dashboard.aiInsights}</div>
+                        <h3>{t.dashboard.aiInsights}</h3>
+                        <p>{t.dashboard.aiInsightSubtitle}</p>
+                      </div>
+                    </div>
+
+                    <div className="insights-list">
+                      {dashboardStats.insights.length ? (
+                        dashboardStats.insights.map((insight, index) => {
+                          const insightClass =
+                            insight.tone === 'positive'
+                              ? 'insight-positive'
+                              : insight.tone === 'negative'
+                                ? 'insight-negative'
+                                : 'insight-warning'
+
+                          let message = ''
+                          if (insight.type === 'emotionLoss') {
+                            message = t.dashboard.insightEmotionLoss(
+                              getTranslatedLabel('emotions', insight.emotion, language),
+                              insight.lossRate,
+                            )
+                          }
+                          if (insight.type === 'overRisk') message = t.dashboard.insightOverRisk(insight.rate)
+                          if (insight.type === 'bestSession') {
+                            message = t.dashboard.insightBestSession(
+                              getTranslatedLabel('sessionBuckets', insight.session, language),
+                            )
+                          }
+                          if (insight.type === 'discipline') {
+                            message = t.dashboard.insightDiscipline(insight.lossRate)
+                          }
+                          if (insight.type === 'avgRrLow') message = t.dashboard.insightAvgRrLow(insight.avgRR)
+
+                          return (
+                            <div className={`insight-row ${insightClass}`} key={`${insight.type}-${index}`}>
+                              <span className="insight-icon">
+                                {insight.tone === 'positive' ? '✓' : insight.tone === 'negative' ? '×' : '!'}
+                              </span>
+                              <span>{message}</span>
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div className="empty-state compact-empty">{t.dashboard.noInsights}</div>
+                      )}
+                    </div>
+                  </article>
+
+                  <article className="dashboard-panel tag-card">
+                    <div className="panel-header">
+                      <div>
+                        <div className="panel-eyebrow">{t.dashboard.tagAnalysis}</div>
+                        <h3>{t.dashboard.tagAnalysis}</h3>
+                      </div>
+                    </div>
+
+                    <div className="tag-list">
+                      {dashboardStats.tagAnalysis.length ? (
+                        dashboardStats.tagAnalysis.map((tag) => (
+                          <div className="tag-row" key={tag.name}>
+                            <div>
+                              <strong>{tag.name}</strong>
+                              <span>
+                                {tag.bias === 'loss'
+                                  ? t.dashboard.tagLossInsight(tag.name, tag.lossRate)
+                                  : t.dashboard.tagInsight(tag.name, tag.winRate)}
+                              </span>
+                            </div>
+                            <span className={`tag-badge tag-${tag.bias}`}>
+                              {tag.count} {tag.count === 1 ? 'trade' : 'trades'}
                             </span>
                           </div>
                         ))
                       ) : (
-                        <div className="empty-state compact-empty">{t.dashboard.noSessions}</div>
+                        <div className="empty-state compact-empty">{t.dashboard.noTags}</div>
                       )}
                     </div>
                   </article>
 
-                  <article className="small-chart-card">
-                    <div className="chart-title">{t.dashboard.executionNotes}</div>
-                    <div className="summary-grid">
-                      <div className="detail-item">
-                        <div className="detail-key">{t.general.mode}</div>
-                        <div className="detail-val">{isDemo ? t.general.demo : t.general.firebase}</div>
+                  <article className="dashboard-panel recent-card">
+                    <div className="panel-title">
+                      <div>
+                        <span>{t.dashboard.recentTrades}</span>
+                        <small className="muted-copy">{t.dashboard.recentTradesSubtitle}</small>
                       </div>
-                      <div className="detail-item">
-                        <div className="detail-key">{t.general.openTradesView}</div>
-                        <div className="detail-val">{trades.length}</div>
-                      </div>
-                      <div className="detail-item">
-                        <div className="detail-key">{t.general.topPair}</div>
-                        <div className="detail-val">{recentTrades[0]?.pair || t.general.noValue}</div>
-                      </div>
-                      <div className="detail-item">
-                        <div className="detail-key">{t.general.latestResult}</div>
-                        <div className="detail-val">
-                          {selectedTrade
-                            ? getTranslatedLabel('results', selectedTrade.result, language)
-                            : recentTrades[0]?.result
-                              ? getTranslatedLabel('results', recentTrades[0].result, language)
-                              : t.general.noValue}
-                        </div>
-                      </div>
+                      <button type="button" className="view-all plain-button" onClick={() => setActivePage('history')}>
+                        {t.dashboard.openHistory}
+                      </button>
                     </div>
+
+                    {tradesLoading ? (
+                      <div className="loading small-loading">
+                        <div className="spinner"></div>
+                        {t.dashboard.loadingTrades}
+                      </div>
+                    ) : recentTrades.length ? (
+                      <div className="recent-trades-list">
+                        {recentTrades.map((trade) => (
+                          <button
+                            type="button"
+                            key={trade.id}
+                            className="trade-item plain-button"
+                            onClick={() => setSelectedTrade(trade)}
+                          >
+                            <div className="pair-icon">{PAIR_EMOJI[trade.pair] || trade.pair.slice(0, 2)}</div>
+                            <div className="trade-info">
+                              <div className="trade-pair">
+                                <span>{trade.pair}</span>
+                                <span className={`type-badge ${trade.type === 'Buy' ? 'badge-buy' : 'badge-sell'}`}>
+                                  {trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}
+                                </span>
+                              </div>
+                              <div className="trade-meta">
+                                {getTranslatedLabel('results', trade.result, language)} • {formatRR(trade.rr || 0)} •{' '}
+                                {trade.timeframe ? getTranslatedLabel('timeframes', trade.timeframe, language) : t.general.noValue}
+                              </div>
+                            </div>
+                            <div>
+                              <div className={`trade-pnl ${trade.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                {formatPnl(trade.pnl, currencyCode)}
+                              </div>
+                              <div className="trade-rr">{formatDateByLanguage(trade.date, language)}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-state">
+                        <strong>{t.dashboard.noRecentTrades}</strong>
+                        <p>{t.dashboard.addFirstSetup}</p>
+                      </div>
+                    )}
                   </article>
                 </div>
               </div>
-
-              <aside className="dash-right">
-                <div className="panel-title">
-                  <span>{t.dashboard.recentTrades}</span>
-                  <button type="button" className="view-all plain-button" onClick={() => setActivePage('history')}>
-                    {t.dashboard.openHistory}
-                  </button>
-                </div>
-
-                {tradesLoading ? (
-                  <div className="loading small-loading">
-                    <div className="spinner"></div>
-                    {t.dashboard.loadingTrades}
-                  </div>
-                ) : recentTrades.length ? (
-                  recentTrades.map((trade) => (
-                    <button
-                      type="button"
-                      key={trade.id}
-                      className="trade-item plain-button"
-                      onClick={() => setSelectedTrade(trade)}
-                    >
-                      <div className="pair-icon">{PAIR_EMOJI[trade.pair] || trade.pair.slice(0, 2)}</div>
-                      <div className="trade-info">
-                        <div className="trade-pair">
-                          <span>{trade.pair}</span>
-                          <span className={`type-badge ${trade.type === 'Buy' ? 'badge-buy' : 'badge-sell'}`}>
-                            {trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}
-                          </span>
-                        </div>
-                        <div className="trade-meta">
-                          {getTranslatedLabel('strategies', trade.strategy, language)} •{' '}
-                          {formatDateByLanguage(trade.date, language)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className={`trade-pnl ${trade.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
-                          {formatPnl(trade.pnl)}
-                        </div>
-                        <div className="trade-rr">{formatRR(trade.rr || 0)}</div>
-                      </div>
-                    </button>
-                  ))
-                ) : (
-                  <div className="empty-state">
-                    <strong>{t.dashboard.noTradesYet}</strong>
-                    <p>{t.dashboard.addFirstSetup}</p>
-                  </div>
-                )}
-              </aside>
             </section>
 
             <section className={`page ${activePage === 'add' ? 'active' : ''}`}>
@@ -1158,6 +1696,23 @@ function App() {
                     </label>
 
                     <label className="form-group">
+                      <span className="form-label">{t.addTrade.timeframe}</span>
+                      <select
+                        className="form-input"
+                        value={tradeForm.timeframe}
+                        onChange={(event) =>
+                          setTradeForm((current) => ({ ...current, timeframe: event.target.value }))
+                        }
+                      >
+                        {TIMEFRAMES.map((timeframe) => (
+                          <option key={timeframe} value={timeframe}>
+                            {getTranslatedLabel('timeframes', timeframe, language)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="form-group">
                       <span className="form-label">{t.addTrade.emotion}</span>
                       <select
                         className="form-input"
@@ -1200,6 +1755,19 @@ function App() {
                         ))}
                       </div>
                     </div>
+
+                    <label className="form-group full">
+                      <span className="form-label">{t.addTrade.tags}</span>
+                      <input
+                        className="form-input"
+                        type="text"
+                        value={tradeForm.tags}
+                        onChange={(event) =>
+                          setTradeForm((current) => ({ ...current, tags: event.target.value }))
+                        }
+                        placeholder={t.addTrade.tagsPlaceholder}
+                      />
+                    </label>
 
                     <label className="form-group full">
                       <span className="form-label">{t.addTrade.notes}</span>
@@ -1342,7 +1910,7 @@ function App() {
                             {formatRR(trade.rr || 0)}
                           </td>
                           <td className={trade.pnl >= 0 ? 'td-pnl-pos' : 'td-pnl-neg'}>
-                            {formatPnl(trade.pnl)}
+                            {formatPnl(trade.pnl, currencyCode)}
                           </td>
                         </tr>
                       ))}
@@ -1418,7 +1986,7 @@ function App() {
               <div className="detail-item">
                 <div className="detail-key">{t.modal.rrPnl}</div>
                 <div className="detail-val">
-                  {formatRR(selectedTrade.rr || 0)} / {formatPnl(selectedTrade.pnl)}
+                  {formatRR(selectedTrade.rr || 0)} / {formatPnl(selectedTrade.pnl, currencyCode)}
                 </div>
               </div>
               <div className="detail-item">
@@ -1431,6 +1999,20 @@ function App() {
                 <div className="detail-key">{t.modal.session}</div>
                 <div className="detail-val">
                   {getTranslatedLabel('sessions', selectedTrade.session, language)}
+                </div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-key">{t.modal.timeframe}</div>
+                <div className="detail-val">
+                  {selectedTrade.timeframe
+                    ? getTranslatedLabel('timeframes', selectedTrade.timeframe, language)
+                    : t.general.noValue}
+                </div>
+              </div>
+              <div className="detail-item">
+                <div className="detail-key">{t.modal.tags}</div>
+                <div className="detail-val">
+                  {normalizeTags(selectedTrade.tags).join(', ') || t.general.noValue}
                 </div>
               </div>
             </div>
