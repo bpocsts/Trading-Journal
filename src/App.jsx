@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
+import SettingsPage from './components/settings/SettingsPage'
+import { useTheme } from './context/useTheme'
 import { useAuth } from './hooks/useAuth'
 import { useTrades } from './hooks/useTrades'
 import {
   loginUser,
   logoutUser,
   registerUser,
-  updateUserAccountBalance,
   updateUserPreferences,
 } from './services/authService'
 import { DEMO_SUMMARY, DEMO_TRADES } from './utils/demoData'
@@ -34,6 +36,7 @@ const copy = {
       dashboard: 'Dashboard',
       add: 'Add Trade',
       history: 'History',
+      settings: 'Settings',
     },
     general: {
       appName: 'Trade Journal',
@@ -408,6 +411,21 @@ const copy = {
   },
 }
 
+copy.th.nav.settings = 'ตั้งค่า'
+
+const PAGE_ROUTES = {
+  dashboard: '/dashboard',
+  add: '/add',
+  history: '/history',
+  settings: '/settings',
+}
+
+function getPageFromPath(pathname) {
+  return (
+    Object.entries(PAGE_ROUTES).find(([, routePath]) => pathname === routePath)?.[0] || 'dashboard'
+  )
+}
+
 const labelMaps = {
   strategies: {
     SMC: { en: 'SMC', th: 'SMC' },
@@ -456,13 +474,13 @@ const labelMaps = {
   },
 }
 
-function createInitialTradeForm() {
+function createInitialTradeForm(defaults = {}) {
   const now = new Date()
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
 
   return {
     date: local.toISOString().slice(0, 16),
-    pair: 'XAUUSD',
+    pair: defaults.defaultPair || 'XAUUSD',
     type: 'Buy',
     entry: '2650',
     sl: '2640',
@@ -471,18 +489,18 @@ function createInitialTradeForm() {
     riskPercent: '1.00',
     result: 'Win',
     pnl: '250.00',
-    strategy: 'SMC',
-    session: 'London',
-    timeframe: 'M15',
-    emotion: 'Calm',
+    strategy: defaults.defaultStrategy || 'SMC',
+    session: defaults.defaultSession || 'London',
+    timeframe: defaults.defaultTimeframe || 'M15',
+    emotion: defaults.defaultEmotion || 'Calm',
     followPlan: 'Yes',
     tags: 'london, setup-a',
     note: '',
   }
 }
 
-function formatDateByLanguage(date, language, options = {}) {
-  const locale = language === 'th' ? 'th-TH' : 'en-US'
+function formatDateByLanguage(date, language, dateFormat = '', options = {}) {
+  const locale = dateFormat || (language === 'th' ? 'th-TH' : 'en-US')
   return new Date(date).toLocaleDateString(locale, {
     month: 'short',
     day: 'numeric',
@@ -536,6 +554,76 @@ function buildAreaPath(points, width, height) {
   return `M 0 ${height} L ${coordinates.join(' L ')} L ${width} ${height} Z`
 }
 
+function buildBars(values = [], max = 100) {
+  const safeValues = values.filter((value) => Number.isFinite(value) && value >= 0)
+  const baseline = safeValues.length ? Math.max(...safeValues, 1) : 1
+
+  return values.map((value) => {
+    const scaled = ((Number(value) || 0) / baseline) * max
+    return Math.max(Math.round(scaled), 8)
+  })
+}
+
+function buildConicGradient(segments = []) {
+  const activeSegments = segments.filter((segment) => segment.value > 0)
+  if (!activeSegments.length) {
+    return 'conic-gradient(from -90deg, rgba(255,255,255,0.08) 0deg 360deg)'
+  }
+
+  const total = activeSegments.reduce((sum, segment) => sum + segment.value, 0) || 1
+  let startAngle = -90
+
+  const stops = activeSegments.map((segment) => {
+    const angle = (segment.value / total) * 360
+    const endAngle = startAngle + angle
+    const stop = `${segment.color} ${startAngle.toFixed(2)}deg ${endAngle.toFixed(2)}deg`
+    startAngle = endAngle
+    return stop
+  })
+
+  if (startAngle < 270) {
+    stops.push(`rgba(255,255,255,0.06) ${startAngle.toFixed(2)}deg 270deg`)
+  }
+
+  return `conic-gradient(from -90deg, ${stops.join(', ')})`
+}
+
+function formatRelativeTradeAge(dateString) {
+  const timestamp = new Date(dateString).getTime()
+  if (Number.isNaN(timestamp)) return ''
+
+  const diffMs = Date.now() - timestamp
+  const diffMinutes = Math.max(Math.floor(diffMs / 60000), 0)
+
+  if (diffMinutes < 60) return `${diffMinutes}m ago`
+
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours}h ago`
+
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) return `${diffDays}d ago`
+
+  const diffWeeks = Math.floor(diffDays / 7)
+  if (diffWeeks < 5) return `${diffWeeks}w ago`
+
+  const diffMonths = Math.floor(diffDays / 30)
+  return `${Math.max(diffMonths, 1)}mo ago`
+}
+
+function getMarketBadge(pair = '') {
+  const marketMap = {
+    XAUUSD: 'AU',
+    EURUSD: 'EU',
+    GBPUSD: 'GB',
+    USDJPY: 'JP',
+    BTCUSD: 'BT',
+    NASDAQ: 'NQ',
+    SP500: 'SP',
+  }
+
+  return marketMap[pair] || pair.slice(0, 2).toUpperCase()
+}
+
 function AnimatedMetric({ value, format, className }) {
   const [displayValue, setDisplayValue] = useState(value)
   const previousValueRef = useRef(value)
@@ -565,15 +653,17 @@ function AnimatedMetric({ value, format, className }) {
 }
 
 function App() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { theme, setTheme } = useTheme()
   const { user, profile, loading, authError, firebaseReady, refreshProfile } = useAuth()
   const [language, setLanguage] = useState('en')
   const [isDemo, setIsDemo] = useState(false)
-  const [activePage, setActivePage] = useState('dashboard')
   const [authMode, setAuthMode] = useState('login')
   const [authForm, setAuthForm] = useState({ displayName: '', email: '', password: '' })
   const [authMessage, setAuthMessage] = useState('')
   const [authSubmitting, setAuthSubmitting] = useState(false)
-  const [tradeForm, setTradeForm] = useState(createInitialTradeForm)
+  const [tradeForm, setTradeForm] = useState(() => createInitialTradeForm())
   const [filters, setFilters] = useState({ pair: '', result: '', strategy: '' })
   const [toast, setToast] = useState('')
   const [selectedTrade, setSelectedTrade] = useState(null)
@@ -582,20 +672,22 @@ function App() {
     DEMO_SUMMARY.accountBalance + buildDashboardAnalytics(DEMO_TRADES).totalProfit,
   )
   const [demoCurrencyCode, setDemoCurrencyCode] = useState('USD')
-  const [balanceEditor, setBalanceEditor] = useState({ mode: '', amount: '' })
 
   const t = copy[language]
+  const activePage = useMemo(() => getPageFromPath(location.pathname), [location.pathname])
+  const goToPage = (page, options = {}) => navigate(PAGE_ROUTES[page] || PAGE_ROUTES.dashboard, options)
   const navItems = useMemo(
     () => [
       { id: 'dashboard', label: t.nav.dashboard, icon: 'O' },
       { id: 'add', label: t.nav.add, icon: '+' },
       { id: 'history', label: t.nav.history, icon: '=' },
+      { id: 'settings', label: t.nav.settings || 'Settings', icon: '⚙' },
     ],
     [t],
   )
 
   const activeUid = isDemo ? 'demo-user' : user?.uid
-  const { trades, loading: tradesLoading, hasMore, loadTrades, addTrade, removeTrade } =
+  const { trades, loading: tradesLoading, hasMore, loadTrades, loadAllTrades, addTrade, removeTrade } =
     useTrades(activeUid, isDemo)
 
   useEffect(() => {
@@ -608,6 +700,13 @@ function App() {
     const timeoutId = window.setTimeout(() => setToast(''), 2500)
     return () => window.clearTimeout(timeoutId)
   }, [toast])
+
+  useEffect(() => {
+    const isKnownRoute = Object.values(PAGE_ROUTES).includes(location.pathname)
+    if ((isDemo || user) && !isKnownRoute) {
+      navigate(PAGE_ROUTES.dashboard, { replace: true })
+    }
+  }, [isDemo, location.pathname, navigate, user])
 
   const rr = useMemo(
     () => calcRR(Number(tradeForm.entry), Number(tradeForm.sl), Number(tradeForm.tp)),
@@ -625,6 +724,24 @@ function App() {
     if (isDemo) return demoCurrencyCode
     return profile?.currencyCode || 'USD'
   }, [demoCurrencyCode, isDemo, profile?.currencyCode])
+  const tradingPreferences = useMemo(() => profile?.tradingPreferences || {}, [profile?.tradingPreferences])
+  const journalPreferences = useMemo(() => profile?.journalPreferences || {}, [profile?.journalPreferences])
+  const riskSettings = useMemo(() => profile?.riskSettings || {}, [profile?.riskSettings])
+  const customLists = useMemo(() => profile?.customLists || {}, [profile?.customLists])
+  const customStrategies = useMemo(() => customLists.strategies || [], [customLists.strategies])
+  const customSessions = useMemo(() => customLists.sessions || [], [customLists.sessions])
+  const customTimeframes = useMemo(() => customLists.timeframes || [], [customLists.timeframes])
+  const customEmotions = useMemo(() => customLists.emotions || [], [customLists.emotions])
+  const customTags = useMemo(() => customLists.tags || [], [customLists.tags])
+  const pairOptions = useMemo(() => Array.from(new Set([...PAIRS, ...(customLists.pairs || [])])), [customLists.pairs])
+  const strategyOptions = useMemo(() => Array.from(new Set([...STRATEGIES, ...customStrategies])), [customStrategies])
+  const sessionOptions = useMemo(() => Array.from(new Set([...SESSIONS, ...customSessions])), [customSessions])
+  const timeframeOptions = useMemo(
+    () => Array.from(new Set([...TIMEFRAMES, ...customTimeframes])),
+    [customTimeframes],
+  )
+  const emotionOptions = useMemo(() => Array.from(new Set([...EMOTIONS, ...customEmotions])), [customEmotions])
+  const journalDateFormat = journalPreferences.dateFormat || ''
 
   const summary = useMemo(() => {
     const displayName =
@@ -655,6 +772,384 @@ function App() {
     [dashboardStats.equityCurve],
   )
   const currencySymbol = getCurrencyMeta(currencyCode).symbol
+  const greeting = `${getGreetingByLanguage(language)}, ${summary.displayName}`
+  const periodLabel = language === 'th' ? 'เดือนนี้' : 'This Month'
+  const equityLabel = language === 'th' ? 'ทั้งหมด' : 'All Time'
+  const uiText = useMemo(
+    () => ({
+      totalPnl: language === 'th' ? 'P&L รวม' : 'Total P&L',
+      performanceBySetup: language === 'th' ? 'ผลงานตาม Setup' : 'Performance by Setup',
+      winLoss: language === 'th' ? 'ชนะ / แพ้' : 'Win / Loss',
+      bestSessionPnl: language === 'th' ? 'ช่วงเวลาที่ดีที่สุด (P&L)' : 'Best Session (P&L)',
+      viewAllSessions: language === 'th' ? 'ดู Sessions ทั้งหมด' : 'View All Sessions',
+      viewAll: language === 'th' ? 'ดูทั้งหมด' : 'View All',
+      lotsSuffix: language === 'th' ? 'ล็อต' : 'Lots',
+      topWinningSetup: language === 'th' ? 'Setup ที่ชนะมากที่สุด' : 'Top Winning Setup',
+      riskManagement: language === 'th' ? 'การบริหารความเสี่ยง' : 'Risk Management',
+      avgRiskPerTrade: language === 'th' ? 'ความเสี่ยงเฉลี่ยต่อไม้' : 'Avg Risk per Trade',
+      profileSavedDemo: language === 'th' ? 'บันทึกโปรไฟล์ในโหมดเดโมแล้ว' : 'Profile settings saved in demo mode',
+      profileUpdated: language === 'th' ? 'อัปเดตโปรไฟล์แล้ว' : 'Profile updated',
+      tradingSavedDemo:
+        language === 'th' ? 'บันทึกการตั้งค่าการเทรดในโหมดเดโมแล้ว' : 'Trading preferences saved in demo mode',
+      tradingUpdated: language === 'th' ? 'อัปเดตการตั้งค่าการเทรดแล้ว' : 'Trading preferences updated',
+      journalSavedDemo:
+        language === 'th' ? 'บันทึกการตั้งค่าวารสารในโหมดเดโมแล้ว' : 'Journal preferences saved in demo mode',
+      journalUpdated: language === 'th' ? 'อัปเดตการตั้งค่าวารสารแล้ว' : 'Journal preferences updated',
+      riskSavedDemo: language === 'th' ? 'บันทึกการตั้งค่าความเสี่ยงในโหมดเดโมแล้ว' : 'Risk settings saved in demo mode',
+      riskUpdated: language === 'th' ? 'อัปเดตการตั้งค่าความเสี่ยงแล้ว' : 'Risk settings updated',
+      listsSavedDemo: language === 'th' ? 'บันทึกรายการกำหนดเองในโหมดเดโมแล้ว' : 'Custom lists saved in demo mode',
+      listsUpdated: language === 'th' ? 'อัปเดตรายการกำหนดเองแล้ว' : 'Custom lists updated',
+      importedTrades: (count) =>
+        language === 'th' ? `นำเข้า ${count} รายการแล้ว` : `Imported ${count} trade(s)`,
+      winRate: language === 'th' ? 'อัตราชนะ' : 'Win Rate',
+      notAvailable: language === 'th' ? 'ไม่มีข้อมูล' : 'N/A',
+    }),
+    [language],
+  )
+  const topSetup = dashboardStats.strategies[0] || null
+  const sessionLeaders = dashboardStats.sessions.slice(0, 3)
+  const setupBreakdown = useMemo(() => {
+    const palette = ['#4f7cff', '#7a5cff', '#f3b84b', '#2dd4bf']
+    const rows = dashboardStats.strategies.slice(0, 4)
+    const total = rows.reduce((sum, row) => sum + row.count, 0) || 1
+
+    return rows.map((row, index) => ({
+      ...row,
+      share: (row.count / total) * 100,
+      value: (row.count / total) * 100,
+      color: palette[index] || '#8ea0c7',
+    }))
+  }, [dashboardStats.strategies])
+  const winLossSegments = useMemo(
+    () => [
+      { label: t.addTrade.win, value: summary.winRate, color: '#31d0aa' },
+      {
+        label: t.addTrade.loss,
+        value: summary.totalTrades ? (summary.lossCount / summary.totalTrades) * 100 : 0,
+        color: '#ff5c5c',
+      },
+      {
+        label: t.addTrade.be,
+        value: summary.totalTrades ? (summary.beCount / summary.totalTrades) * 100 : 0,
+        color: '#93a0bf',
+      },
+    ],
+    [summary, t.addTrade.be, t.addTrade.loss, t.addTrade.win],
+  )
+  const statBars = useMemo(
+    () => buildBars(recentTrades.slice(0, 8).reverse().map((trade) => Math.abs(Number(trade.pnl) || 0) + 1), 100),
+    [recentTrades],
+  )
+  const totalProfitSparkline = useMemo(
+    () =>
+      buildChartPath(
+        dashboardStats.equityCurve.slice(-12).map((point) => ({ value: point.value })),
+        100,
+        36,
+      ),
+    [dashboardStats.equityCurve],
+  )
+  const avgRrSparkline = useMemo(
+    () =>
+      buildChartPath(
+        recentTrades
+          .slice(0, 8)
+          .reverse()
+          .map((trade) => ({ value: Number(trade.rr) || 0 })),
+        100,
+        36,
+      ),
+    [recentTrades],
+  )
+  const topSetupSparkline = useMemo(
+    () =>
+      buildChartPath(
+        dashboardStats.strategies
+          .slice(0, 6)
+          .reverse()
+          .map((strategy) => ({ value: strategy.profit || 0 })),
+        100,
+        36,
+      ),
+    [dashboardStats.strategies],
+  )
+  const lastEquityPoint = dashboardStats.equityCurve[dashboardStats.equityCurve.length - 1] || null
+  const equityAxisLabels = useMemo(() => {
+    if (!dashboardStats.equityCurve.length) return []
+
+    const values = dashboardStats.equityCurve.map((point) => point.value)
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    const range = max - min || 1
+
+    return [1, 0.66, 0.33, 0].map((ratio) => {
+      const value = min + range * ratio
+      return formatMoney(value, currencyCode)
+    })
+  }, [currencyCode, dashboardStats.equityCurve])
+  const winLossGradient = useMemo(() => buildConicGradient(winLossSegments), [winLossSegments])
+  const setupGradient = useMemo(() => buildConicGradient(setupBreakdown), [setupBreakdown])
+  const topSessionRows = useMemo(() => dashboardStats.sessions.slice(0, 3), [dashboardStats.sessions])
+  const topTimeframeRows = useMemo(() => dashboardStats.timeframes.slice(0, 3), [dashboardStats.timeframes])
+  const topStrategyRows = useMemo(() => dashboardStats.strategies.slice(0, 4), [dashboardStats.strategies])
+  const maxStrategyProfit = useMemo(
+    () => Math.max(...dashboardStats.strategies.map((item) => Math.abs(item.profit)), 1),
+    [dashboardStats.strategies],
+  )
+  const riskStatus = summary.avgRisk <= 1.2 ? 'Good' : summary.avgRisk <= 1.8 ? 'Watch' : 'High'
+  const riskStatusClass =
+    summary.avgRisk <= 1.2 ? 'risk-good' : summary.avgRisk <= 1.8 ? 'risk-watch' : 'risk-high'
+  const settingsData = useMemo(
+    () => ({
+      profile: {
+        displayName: summary.displayName,
+        email: summary.email,
+      },
+      trading: {
+        currencyCode,
+        accountBalance,
+        defaultPair: tradingPreferences.defaultPair || 'XAUUSD',
+        defaultTimeframe: tradingPreferences.defaultTimeframe || 'M15',
+        defaultStrategy: tradingPreferences.defaultStrategy || 'SMC',
+        defaultSession: tradingPreferences.defaultSession || 'London',
+        defaultEmotion: tradingPreferences.defaultEmotion || 'Calm',
+      },
+      journal: {
+        language,
+        theme,
+        dateFormat: journalDateFormat || (language === 'th' ? 'th-TH' : 'en-US'),
+        defaultPairFilter: journalPreferences.defaultPairFilter || '',
+        defaultResultFilter: journalPreferences.defaultResultFilter || '',
+        defaultStrategyFilter: journalPreferences.defaultStrategyFilter || '',
+      },
+      risk: {
+        targetRiskPerTrade: riskSettings.targetRiskPerTrade ?? 1,
+        maxDailyLoss: riskSettings.maxDailyLoss ?? 300,
+        maxWeeklyLoss: riskSettings.maxWeeklyLoss ?? 1000,
+        alertThreshold: riskSettings.alertThreshold ?? 80,
+      },
+      customLists: {
+        strategies: customStrategies,
+        sessions: customSessions,
+        timeframes: customTimeframes,
+        emotions: customEmotions,
+        tags: customTags,
+      },
+      meta: {
+        firebaseReady,
+        workspace: isDemo ? 'Demo' : 'Live',
+        version: '0.2.0',
+      },
+    }),
+    [
+      summary,
+      currencyCode,
+      accountBalance,
+      tradingPreferences,
+      language,
+      theme,
+      journalDateFormat,
+      journalPreferences,
+      riskSettings,
+      customStrategies,
+      customSessions,
+      customTimeframes,
+      customEmotions,
+      customTags,
+      firebaseReady,
+      isDemo,
+    ],
+  )
+  const optionSets = useMemo(
+    () => ({
+      currencies: CURRENCY_OPTIONS,
+      pairs: pairOptions,
+      strategies: strategyOptions,
+      sessions: sessionOptions,
+      timeframes: timeframeOptions,
+      emotions: emotionOptions,
+    }),
+    [emotionOptions, pairOptions, sessionOptions, strategyOptions, timeframeOptions],
+  )
+  const settingsPageKey = useMemo(() => JSON.stringify(settingsData), [settingsData])
+  const isInitialTradesLoading = tradesLoading && !trades.length
+
+  async function persistProfileUpdates(updates) {
+    if (isDemo || !user?.uid) return
+    await updateUserPreferences(user.uid, updates)
+    await refreshProfile(user.uid)
+  }
+
+  function downloadFile(filename, content, type) {
+    const blob = new Blob([content], { type })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleSaveProfileSettings(nextProfile) {
+    if (isDemo) {
+      setToast(uiText.profileSavedDemo)
+      return
+    }
+
+    await persistProfileUpdates({
+      displayName: nextProfile.displayName.trim() || t.general.traderFallback,
+    })
+    setToast(uiText.profileUpdated)
+  }
+
+  async function handleSaveTradingSettings(nextTrading) {
+    const normalized = {
+      currencyCode: nextTrading.currencyCode,
+      accountBalance: Math.max(Number(nextTrading.accountBalance) || 0, 0),
+      tradingPreferences: {
+        defaultPair: nextTrading.defaultPair,
+        defaultTimeframe: nextTrading.defaultTimeframe,
+        defaultStrategy: nextTrading.defaultStrategy,
+        defaultSession: nextTrading.defaultSession,
+        defaultEmotion: nextTrading.defaultEmotion,
+      },
+    }
+
+    if (isDemo) {
+      setDemoCurrencyCode(normalized.currencyCode)
+      setDemoAccountBalance(normalized.accountBalance)
+      setTradeForm(createInitialTradeForm(normalized.tradingPreferences))
+      setToast(uiText.tradingSavedDemo)
+      return
+    }
+
+    await persistProfileUpdates(normalized)
+    setTradeForm(createInitialTradeForm(normalized.tradingPreferences))
+    setToast(uiText.tradingUpdated)
+  }
+
+  async function handleSaveJournalSettings(nextJournal) {
+    setLanguage(nextJournal.language)
+    setTheme(nextJournal.theme)
+
+    const nextFilters = {
+      pair: nextJournal.defaultPairFilter,
+      result: nextJournal.defaultResultFilter,
+      strategy: nextJournal.defaultStrategyFilter,
+    }
+
+    setFilters(nextFilters)
+
+    if (isDemo) {
+      setToast(uiText.journalSavedDemo)
+      return
+    }
+
+    await persistProfileUpdates({
+      journalPreferences: {
+        language: nextJournal.language,
+        theme: nextJournal.theme,
+        dateFormat: nextJournal.dateFormat,
+        defaultPairFilter: nextJournal.defaultPairFilter,
+        defaultResultFilter: nextJournal.defaultResultFilter,
+        defaultStrategyFilter: nextJournal.defaultStrategyFilter,
+      },
+    })
+    setToast(uiText.journalUpdated)
+  }
+
+  async function handleSaveRiskSettings(nextRisk) {
+    const normalized = {
+      targetRiskPerTrade: Number(nextRisk.targetRiskPerTrade) || 0,
+      maxDailyLoss: Number(nextRisk.maxDailyLoss) || 0,
+      maxWeeklyLoss: Number(nextRisk.maxWeeklyLoss) || 0,
+      alertThreshold: Number(nextRisk.alertThreshold) || 0,
+    }
+
+    if (isDemo) {
+      setToast(uiText.riskSavedDemo)
+      return
+    }
+
+    await persistProfileUpdates({ riskSettings: normalized })
+    setToast(uiText.riskUpdated)
+  }
+
+  async function handleSaveCustomLists(nextLists) {
+    if (isDemo) {
+      setToast(uiText.listsSavedDemo)
+      return
+    }
+
+    await persistProfileUpdates({
+      customLists: nextLists,
+    })
+    setToast(uiText.listsUpdated)
+  }
+
+  async function handleExportJson() {
+    const allTrades = isDemo ? [...DEMO_TRADES] : await loadAllTrades()
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      profile: settingsData,
+      trades: allTrades,
+    }
+    downloadFile(
+      `trading-journal-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      JSON.stringify(payload, null, 2),
+      'application/json',
+    )
+  }
+
+  async function handleExportCsv() {
+    const allTrades = isDemo ? [...DEMO_TRADES] : await loadAllTrades()
+    const headers = [
+      'date',
+      'pair',
+      'type',
+      'result',
+      'entry',
+      'sl',
+      'tp',
+      'pnl',
+      'lot',
+      'riskPercent',
+      'strategy',
+      'session',
+      'timeframe',
+      'emotion',
+      'followPlan',
+      'tags',
+      'note',
+    ]
+
+    const rows = allTrades.map((trade) =>
+      headers
+        .map((key) => `"${String(trade[key] ?? '').replaceAll('"', '""')}"`)
+        .join(','),
+    )
+
+    downloadFile(
+      `trading-journal-${new Date().toISOString().slice(0, 10)}.csv`,
+      [headers.join(','), ...rows].join('\n'),
+      'text/csv;charset=utf-8',
+    )
+  }
+
+  async function handleImportJson(file) {
+    const text = await file.text()
+    const payload = JSON.parse(text)
+    const importedTrades = Array.isArray(payload.trades) ? payload.trades : []
+
+    for (const trade of importedTrades) {
+      const tradePayload = { ...trade }
+      delete tradePayload.id
+      delete tradePayload.createdAt
+      await addTrade(tradePayload)
+    }
+
+    setToast(uiText.importedTrades(importedTrades.length))
+  }
 
   async function handleAuthSubmit(event) {
     event.preventDefault()
@@ -669,6 +1164,7 @@ function App() {
       }
 
       setIsDemo(false)
+      goToPage('dashboard', { replace: true })
       setAuthForm({ displayName: '', email: '', password: '' })
     } catch (error) {
       setAuthMessage(error.message)
@@ -679,9 +1175,8 @@ function App() {
 
   function handleEnterDemo() {
     setIsDemo(true)
-    setActivePage('dashboard')
+    goToPage('dashboard', { replace: true })
     setSelectedTrade(null)
-    setBalanceEditor({ mode: '', amount: '' })
     setToast(t.toasts.demoEnabled)
   }
 
@@ -689,62 +1184,11 @@ function App() {
     if (isDemo) {
       setIsDemo(false)
       setSelectedTrade(null)
-      setBalanceEditor({ mode: '', amount: '' })
       return
     }
 
     await logoutUser()
     setSelectedTrade(null)
-  }
-
-  function openBalanceEditor(mode) {
-    setBalanceEditor({ mode, amount: '' })
-  }
-
-  function closeBalanceEditor() {
-    setBalanceEditor({ mode: '', amount: '' })
-  }
-
-  async function handleCurrencyChange(nextCurrencyCode) {
-    try {
-      if (isDemo) {
-        setDemoCurrencyCode(nextCurrencyCode)
-      } else if (user?.uid) {
-        await updateUserPreferences(user.uid, { currencyCode: nextCurrencyCode })
-        await refreshProfile(user.uid)
-      }
-    } catch (error) {
-      setToast(error.message)
-    }
-  }
-
-  async function handleBalanceSubmit(event) {
-    event.preventDefault()
-
-    const rawAmount = Number(balanceEditor.amount)
-    const amount = Number.isFinite(rawAmount) ? rawAmount : 0
-
-    let nextBalance = accountBalance
-    if (balanceEditor.mode === 'set') nextBalance = Math.max(amount, 0)
-    if (balanceEditor.mode === 'add') nextBalance = accountBalance + Math.max(amount, 0)
-    if (balanceEditor.mode === 'subtract') {
-      nextBalance = Math.max(accountBalance - Math.max(amount, 0), 0)
-    }
-    if (balanceEditor.mode === 'clear') nextBalance = 0
-
-    try {
-      if (isDemo) {
-        setDemoAccountBalance(parseFloat(nextBalance.toFixed(2)))
-      } else if (user?.uid) {
-        await updateUserAccountBalance(user.uid, nextBalance)
-        await refreshProfile(user.uid)
-      }
-
-      closeBalanceEditor()
-      setToast(t.toasts.balanceUpdated)
-    } catch (error) {
-      setToast(error.message)
-    }
   }
 
   async function handleTradeSubmit(event) {
@@ -772,8 +1216,8 @@ function App() {
         await refreshProfile(user.uid)
       }
 
-      setTradeForm(createInitialTradeForm())
-      setActivePage('dashboard')
+      setTradeForm(createInitialTradeForm(tradingPreferences))
+      goToPage('dashboard')
       setToast(t.toasts.tradeSaved)
     } catch (error) {
       setToast(error.message)
@@ -933,7 +1377,7 @@ function App() {
                 key={item.id}
                 type="button"
                 className={`nav-item ${activePage === item.id ? 'active' : ''}`}
-                onClick={() => setActivePage(item.id)}
+                onClick={() => goToPage(item.id)}
               >
                 <span className="nav-icon">{item.icon}</span>
                 <span>{item.label}</span>
@@ -948,69 +1392,6 @@ function App() {
               <div className={`acc-change ${summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
                 {formatPnl(summary.totalProfit, currencyCode)} {t.sidebar.netLoadedTrades}
               </div>
-              <label className="balance-currency-row">
-                <span className="acc-label">{t.sidebar.currency}</span>
-                <select
-                  className="form-input currency-select"
-                  value={currencyCode}
-                  onChange={(event) => handleCurrencyChange(event.target.value)}
-                >
-                  {CURRENCY_OPTIONS.map((option) => (
-                    <option key={option.code} value={option.code}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="balance-actions">
-                <button type="button" className="balance-btn" onClick={() => openBalanceEditor('set')}>
-                  {t.sidebar.set}
-                </button>
-                <button type="button" className="balance-btn" onClick={() => openBalanceEditor('add')}>
-                  {t.sidebar.add}
-                </button>
-                <button
-                  type="button"
-                  className="balance-btn"
-                  onClick={() => openBalanceEditor('subtract')}
-                >
-                  {t.sidebar.subtract}
-                </button>
-                <button
-                  type="button"
-                  className="balance-btn balance-btn-danger"
-                  onClick={() => openBalanceEditor('clear')}
-                >
-                  {t.sidebar.clear}
-                </button>
-              </div>
-              {balanceEditor.mode ? (
-                <form className="balance-editor" onSubmit={handleBalanceSubmit}>
-                  <div className="balance-editor-title">{t.sidebar.editorTitle}</div>
-                  {balanceEditor.mode !== 'clear' ? (
-                    <input
-                      className="form-input balance-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={balanceEditor.amount}
-                      placeholder={t.sidebar.amountPlaceholder}
-                      onChange={(event) =>
-                        setBalanceEditor((current) => ({ ...current, amount: event.target.value }))
-                      }
-                      required
-                    />
-                  ) : null}
-                  <div className="balance-editor-actions">
-                    <button type="submit" className="balance-submit">
-                      {t.sidebar.apply}
-                    </button>
-                    <button type="button" className="balance-cancel" onClick={closeBalanceEditor}>
-                      {t.sidebar.cancel}
-                    </button>
-                  </div>
-                </form>
-              ) : null}
             </div>
 
             <button type="button" className="user-row action-row" onClick={handleLogout}>
@@ -1062,20 +1443,358 @@ function App() {
                   <small>{isDemo ? t.general.demo : t.general.logout}</small>
                 </span>
               </button>
-              <button
-                type="button"
-                className="icon-btn quick-add-btn"
-                onClick={() => setActivePage('add')}
-                title={t.addTrade.title}
-              >
-                +
-              </button>
             </div>
           </header>
 
           <div className="content">
             <section className={`page ${activePage === 'dashboard' ? 'active' : ''}`}>
               <div className="dashboard-shell">
+                <div className="dashboard-reference-hero">
+                  <div>
+                    <h1>
+                      {greeting}
+                      <span className="dashboard-wave"> 👋</span>
+                    </h1>
+                    <p>{language === 'th' ? 'ภาพรวมผลการเทรดของคุณวันนี้' : "Here's your trading performance overview"}</p>
+                  </div>
+                  <button type="button" className="dashboard-filter-btn" onClick={() => loadTrades(filters, true)}>
+                    <span className="dashboard-filter-icon">◷</span>
+                    {periodLabel}
+                  </button>
+                </div>
+
+                {!firebaseReady && !isDemo ? (
+                  <div className="status-banner dashboard-reference-banner">{t.dashboard.firebaseBanner}</div>
+                ) : null}
+
+                <div className="dashboard-reference-grid">
+                  <div className="dashboard-reference-main">
+                    <div className="dashboard-kpi-grid">
+                      <article className="dashboard-kpi-card dashboard-kpi-profit">
+                        <div className="dashboard-kpi-top">
+                          <div className="dashboard-kpi-label">{uiText.totalPnl}</div>
+                          <div className="dashboard-kpi-icon">$</div>
+                        </div>
+                        <AnimatedMetric
+                          className="dashboard-kpi-value"
+                          value={accountBalance}
+                          format={(value) => formatMoney(value, currencyCode)}
+                        />
+                        <div className={`dashboard-kpi-delta ${summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                          {summary.totalProfit >= 0 ? '+' : ''}
+                          {formatPnl(summary.totalProfit, currencyCode)}
+                        </div>
+                        <svg viewBox="0 0 100 36" className="dashboard-kpi-sparkline" preserveAspectRatio="none">
+                          <path d={totalProfitSparkline} />
+                        </svg>
+                      </article>
+
+                      <article className="dashboard-kpi-card">
+                        <div className="dashboard-kpi-top">
+                          <div className="dashboard-kpi-label">{t.dashboard.winRate}</div>
+                          <div className="dashboard-kpi-icon">◔</div>
+                        </div>
+                        <div className="dashboard-kpi-gauge">
+                          <div
+                            className="dashboard-ring"
+                            style={{
+                              background: buildConicGradient([
+                                { value: summary.winRate, color: '#4f7cff' },
+                                { value: 100 - summary.winRate, color: 'rgba(255,255,255,0.06)' },
+                              ]),
+                            }}
+                          >
+                            <div className="dashboard-ring-inner">
+                              <AnimatedMetric
+                                className="dashboard-ring-value"
+                                value={summary.winRate}
+                                format={(value) => `${value.toFixed(1)}%`}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="dashboard-kpi-delta text-profit">+{summary.winCount}</div>
+                      </article>
+
+                      <article className="dashboard-kpi-card">
+                        <div className="dashboard-kpi-top">
+                          <div className="dashboard-kpi-label">{t.dashboard.totalTrades}</div>
+                          <div className="dashboard-kpi-icon">▣</div>
+                        </div>
+                        <AnimatedMetric
+                          className="dashboard-kpi-value"
+                          value={summary.totalTrades}
+                          format={(value) => Math.round(value).toLocaleString('en-US')}
+                        />
+                        <div className="dashboard-kpi-delta text-profit">+{recentTrades.length}</div>
+                        <div className="dashboard-bar-chart">
+                          {statBars.map((height, index) => (
+                            <span key={index} style={{ height: `${height}%` }}></span>
+                          ))}
+                        </div>
+                      </article>
+
+                      <article className="dashboard-kpi-card">
+                        <div className="dashboard-kpi-top">
+                          <div className="dashboard-kpi-label">{t.dashboard.averageRr}</div>
+                          <div className="dashboard-kpi-icon">⚖</div>
+                        </div>
+                        <AnimatedMetric
+                          className="dashboard-kpi-value"
+                          value={summary.avgRR}
+                          format={(value) => value.toFixed(2)}
+                        />
+                        <div className={`dashboard-kpi-delta ${summary.avgRR >= 1.5 ? 'text-profit' : 'text-loss'}`}>
+                          {summary.avgRR >= 1.5 ? '+' : ''}
+                          {summary.avgRR.toFixed(2)}
+                        </div>
+                        <svg
+                          viewBox="0 0 100 36"
+                          className="dashboard-kpi-sparkline dashboard-kpi-sparkline-purple"
+                          preserveAspectRatio="none"
+                        >
+                          <path d={avgRrSparkline} />
+                        </svg>
+                      </article>
+                    </div>
+
+                    <article className="dashboard-panel dashboard-equity-card">
+                      <div className="dashboard-panel-head">
+                        <div>
+                          <h3>{t.dashboard.equityCurve}</h3>
+                        </div>
+                        <button type="button" className="dashboard-filter-btn dashboard-filter-btn-small">
+                          {equityLabel}
+                        </button>
+                      </div>
+
+                      {dashboardStats.equityCurve.length ? (
+                        <div className="dashboard-equity-body">
+                          <div className="dashboard-equity-axis-y">
+                            {equityAxisLabels.map((label) => (
+                              <span key={label}>{label}</span>
+                            ))}
+                          </div>
+                          <div className="dashboard-equity-chart-shell">
+                            <svg viewBox="0 0 100 100" className="equity-chart dashboard-equity-chart" preserveAspectRatio="none">
+                              <defs>
+                                <linearGradient id="equityGlowFill" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="rgba(76, 123, 255, 0.45)" />
+                                  <stop offset="100%" stopColor="rgba(76, 123, 255, 0.02)" />
+                                </linearGradient>
+                              </defs>
+                              <path d={equityAreaPath} className="dashboard-equity-area" />
+                              <path d={equityCurvePath} className="dashboard-equity-line" />
+                            </svg>
+                            {lastEquityPoint ? (
+                              <div className="dashboard-equity-callout">
+                                <strong>{formatMoney(lastEquityPoint.value, currencyCode)}</strong>
+                                <span>{formatDate(lastEquityPoint.date, { year: 'numeric' })}</span>
+                              </div>
+                            ) : null}
+                            <div className="dashboard-equity-axis-x">
+                              <span>{formatDate(dashboardStats.equityCurve[0].date, { month: 'short' })}</span>
+                              <span>
+                                {formatDate(dashboardStats.equityCurve[dashboardStats.equityCurve.length - 1].date, {
+                                  month: 'short',
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="empty-state compact-empty">
+                          <strong>{t.dashboard.noTradesYet}</strong>
+                          <p>{t.dashboard.addFirstSetup}</p>
+                        </div>
+                      )}
+                    </article>
+
+                    <div className="dashboard-reference-bottom">
+                      <article className="dashboard-panel dashboard-setup-card">
+                        <div className="dashboard-panel-head dashboard-panel-head-tight">
+                          <div>
+                            <h3>{uiText.performanceBySetup}</h3>
+                          </div>
+                        </div>
+
+                        {setupBreakdown.length ? (
+                          <>
+                            <div className="dashboard-breakdown">
+                              <div className="dashboard-donut" style={{ backgroundImage: setupGradient }}>
+                                <div className="dashboard-donut-inner"></div>
+                              </div>
+                              <div className="dashboard-breakdown-list">
+                                {setupBreakdown.map((setup) => (
+                                  <div className="dashboard-breakdown-row" key={setup.name}>
+                                    <span className="dashboard-breakdown-key">
+                                      <i style={{ backgroundColor: setup.color }}></i>
+                                      {getTranslatedLabel('strategies', setup.name, language)}
+                                    </span>
+                                    <strong>{setup.share.toFixed(0)}%</strong>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            <button type="button" className="dashboard-link-btn" onClick={() => goToPage('history')}>
+                              {language === 'th' ? 'ดู Analytics' : 'View Analytics'}
+                              <span>→</span>
+                            </button>
+                          </>
+                        ) : (
+                          <div className="empty-state compact-empty">{t.dashboard.noStrategyData}</div>
+                        )}
+                      </article>
+
+                      <article className="dashboard-panel dashboard-winloss-card">
+                        <div className="dashboard-panel-head dashboard-panel-head-tight">
+                          <div>
+                            <h3>{uiText.winLoss}</h3>
+                          </div>
+                        </div>
+
+                        <div className="dashboard-winloss-body">
+                          <div className="dashboard-donut dashboard-donut-large" style={{ backgroundImage: winLossGradient }}>
+                            <div className="dashboard-donut-inner dashboard-donut-copy">
+                              <strong>{summary.winRate.toFixed(0)}%</strong>
+                              <span>{t.dashboard.winRate}</span>
+                            </div>
+                          </div>
+                          <div className="dashboard-winloss-legend">
+                            {winLossSegments.map((segment) => (
+                              <div className="dashboard-breakdown-row" key={segment.label}>
+                                <span className="dashboard-breakdown-key">
+                                  <i style={{ backgroundColor: segment.color }}></i>
+                                  {segment.label}
+                                </span>
+                                <strong>{segment.value.toFixed(0)}%</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </article>
+
+                      <article className="dashboard-panel dashboard-session-card">
+                        <div className="dashboard-panel-head dashboard-panel-head-tight">
+                          <div>
+                            <h3>{uiText.bestSessionPnl}</h3>
+                          </div>
+                        </div>
+
+                        {sessionLeaders.length ? (
+                          <>
+                            <div className="dashboard-session-list">
+                              {sessionLeaders.map((session) => (
+                                <div className="dashboard-session-row" key={session.name}>
+                                  <span>{getTranslatedLabel('sessionBuckets', session.name, language)}</span>
+                                  <strong className={session.profit >= 0 ? 'text-profit' : 'text-loss'}>
+                                    {formatPnl(session.profit, currencyCode)}
+                                  </strong>
+                                </div>
+                              ))}
+                            </div>
+                            <button type="button" className="dashboard-link-btn" onClick={() => goToPage('history')}>
+                              {uiText.viewAllSessions}
+                              <span>→</span>
+                            </button>
+                          </>
+                        ) : (
+                          <div className="empty-state compact-empty">{t.dashboard.noSessionData}</div>
+                        )}
+                      </article>
+                    </div>
+                  </div>
+
+                  <aside className="dashboard-side-rail">
+                    <article className="dashboard-panel dashboard-recent-panel">
+                      <div className="dashboard-panel-head dashboard-panel-head-tight">
+                        <div>
+                          <h3>{t.dashboard.recentTrades}</h3>
+                        </div>
+                        <button type="button" className="dashboard-text-link" onClick={() => goToPage('history')}>
+                          {uiText.viewAll}
+                        </button>
+                      </div>
+
+                      {isInitialTradesLoading ? (
+                        <div className="loading small-loading">
+                          <div className="spinner"></div>
+                          {t.dashboard.loadingTrades}
+                        </div>
+                      ) : recentTrades.length ? (
+                        <div className="dashboard-recent-list">
+                          {recentTrades.slice(0, 5).map((trade) => (
+                            <button
+                              type="button"
+                              key={trade.id}
+                              className="dashboard-recent-item plain-button"
+                              onClick={() => setSelectedTrade(trade)}
+                            >
+                              <div className="dashboard-market-badge">{getMarketBadge(trade.pair)}</div>
+                              <div className="dashboard-recent-copy">
+                                <div className="dashboard-recent-row">
+                                  <strong>{trade.pair}</strong>
+                                  <span className={`dashboard-order-chip ${trade.type === 'Buy' ? 'buy-chip' : 'sell-chip'}`}>
+                                    {trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}
+                                  </span>
+                                </div>
+                                <div className="dashboard-recent-meta">
+                                  {(trade.lot || 0).toFixed(2)} {uiText.lotsSuffix} • {formatRelativeTradeAge(trade.date)}
+                                </div>
+                              </div>
+                              <div className="dashboard-recent-values">
+                                <strong className={trade.pnl >= 0 ? 'text-profit' : 'text-loss'}>
+                                  {formatPnl(trade.pnl, currencyCode)}
+                                </strong>
+                                <span>{formatRR(trade.rr || 0)}</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="empty-state compact-empty">{t.dashboard.noRecentTrades}</div>
+                      )}
+                    </article>
+
+                    <article className="dashboard-panel dashboard-side-highlight">
+                      <div className="dashboard-side-icon">🏆</div>
+                      <div className="dashboard-side-label">
+                        {uiText.topWinningSetup}
+                      </div>
+                      <strong className="dashboard-side-title">
+                        {topSetup ? getTranslatedLabel('strategies', topSetup.name, language) : uiText.notAvailable}
+                      </strong>
+                      <div className="dashboard-side-profit text-profit">
+                        {topSetup ? formatPnl(topSetup.profit, currencyCode) : t.general.noValue}
+                      </div>
+                      <div className="dashboard-side-meta">
+                        {uiText.winRate}: {topSetup ? topSetup.winRate.toFixed(0) : 0}%
+                      </div>
+                      <svg viewBox="0 0 100 36" className="dashboard-side-sparkline" preserveAspectRatio="none">
+                        <path d={topSetupSparkline} />
+                      </svg>
+                    </article>
+
+                    <article className="dashboard-panel dashboard-side-risk">
+                      <div className="dashboard-side-icon">🛡</div>
+                      <div className="dashboard-side-label">
+                        {uiText.riskManagement}
+                      </div>
+                      <div className="dashboard-risk-row">
+                        <span>{uiText.avgRiskPerTrade}</span>
+                      </div>
+                      <strong className="dashboard-risk-value">{summary.avgRisk.toFixed(2)}%</strong>
+                      <div className="dashboard-risk-bar">
+                        <span
+                          className={`dashboard-risk-fill ${riskStatusClass}`}
+                          style={{ width: `${Math.min((summary.avgRisk / 2.5) * 100, 100)}%` }}
+                        ></span>
+                      </div>
+                      <div className={`dashboard-risk-status ${riskStatusClass}`}>{riskStatus}</div>
+                    </article>
+                  </aside>
+                </div>
+
                 <div className="greeting dashboard-hero">
                   <div>
                     <h1>{summary.displayName}</h1>
@@ -1231,23 +1950,25 @@ function App() {
                     </div>
 
                     <div className="analytics-list">
-                      {dashboardStats.sessions.length ? (
-                        dashboardStats.sessions.map((session) => (
+                      {topSessionRows.length ? (
+                        topSessionRows.map((session) => (
                           <div
                             key={session.name}
                             className={`analytics-row ${
                               dashboardStats.bestSession?.name === session.name ? 'analytics-row-active' : ''
                             }`}
                           >
-                            <div>
+                            <div className="analytics-copy">
                               <strong>{getTranslatedLabel('sessionBuckets', session.name, language)}</strong>
                               <span>
                                 {t.dashboard.sessionWinRate}: {session.winRate.toFixed(1)}%
                               </span>
                             </div>
-                            <strong className={session.profit >= 0 ? 'text-profit' : 'text-loss'}>
-                              {formatPnl(session.profit, currencyCode)}
-                            </strong>
+                            <div className="analytics-value-group">
+                              <strong className={session.profit >= 0 ? 'text-profit' : 'text-loss'}>
+                                {formatPnl(session.profit, currencyCode)}
+                              </strong>
+                            </div>
                           </div>
                         ))
                       ) : (
@@ -1270,21 +1991,23 @@ function App() {
                     </div>
 
                     <div className="analytics-list">
-                      {dashboardStats.timeframes.length ? (
-                        dashboardStats.timeframes.map((timeframe) => (
+                      {topTimeframeRows.length ? (
+                        topTimeframeRows.map((timeframe) => (
                           <div
                             key={timeframe.name}
                             className={`analytics-row ${
                               dashboardStats.bestTimeframe?.name === timeframe.name ? 'analytics-row-active' : ''
                             }`}
                           >
-                            <div>
+                            <div className="analytics-copy">
                               <strong>{getTranslatedLabel('timeframes', timeframe.name, language)}</strong>
                               <span>
                                 {t.dashboard.winRate}: {timeframe.winRate.toFixed(1)}%
                               </span>
                             </div>
-                            <strong>{timeframe.avgRR.toFixed(2)}R</strong>
+                            <div className="analytics-value-group">
+                              <strong>{timeframe.avgRR.toFixed(2)}R</strong>
+                            </div>
                           </div>
                         ))
                       ) : (
@@ -1301,14 +2024,10 @@ function App() {
                       </div>
                     </div>
 
-                    {dashboardStats.strategies.length ? (
+                    {topStrategyRows.length ? (
                       <div className="strategy-bars">
-                        {dashboardStats.strategies.slice(0, 5).map((strategy) => {
-                          const maxAbsProfit = Math.max(
-                            ...dashboardStats.strategies.map((item) => Math.abs(item.profit)),
-                            1,
-                          )
-                          const width = (Math.abs(strategy.profit) / maxAbsProfit) * 100
+                        {topStrategyRows.map((strategy) => {
+                          const width = (Math.abs(strategy.profit) / maxStrategyProfit) * 100
 
                           return (
                             <div className="strategy-bar-row" key={strategy.name}>
@@ -1427,12 +2146,12 @@ function App() {
                         <span>{t.dashboard.recentTrades}</span>
                         <small className="muted-copy">{t.dashboard.recentTradesSubtitle}</small>
                       </div>
-                      <button type="button" className="view-all plain-button" onClick={() => setActivePage('history')}>
+                      <button type="button" className="view-all plain-button" onClick={() => goToPage('history')}>
                         {t.dashboard.openHistory}
                       </button>
                     </div>
 
-                    {tradesLoading ? (
+                    {isInitialTradesLoading ? (
                       <div className="loading small-loading">
                         <div className="spinner"></div>
                         {t.dashboard.loadingTrades}
@@ -1463,7 +2182,7 @@ function App() {
                               <div className={`trade-pnl ${trade.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
                                 {formatPnl(trade.pnl, currencyCode)}
                               </div>
-                              <div className="trade-rr">{formatDateByLanguage(trade.date, language)}</div>
+                              <div className="trade-rr">{formatDateByLanguage(trade.date, language, journalDateFormat)}</div>
                             </div>
                           </button>
                         ))}
@@ -1511,7 +2230,7 @@ function App() {
                           setTradeForm((current) => ({ ...current, pair: event.target.value }))
                         }
                       >
-                        {PAIRS.map((pair) => (
+                        {pairOptions.map((pair) => (
                           <option key={pair} value={pair}>
                             {pair}
                           </option>
@@ -1670,7 +2389,7 @@ function App() {
                           setTradeForm((current) => ({ ...current, strategy: event.target.value }))
                         }
                       >
-                        {STRATEGIES.map((strategy) => (
+                        {strategyOptions.map((strategy) => (
                           <option key={strategy} value={strategy}>
                             {getTranslatedLabel('strategies', strategy, language)}
                           </option>
@@ -1687,7 +2406,7 @@ function App() {
                           setTradeForm((current) => ({ ...current, session: event.target.value }))
                         }
                       >
-                        {SESSIONS.map((session) => (
+                        {sessionOptions.map((session) => (
                           <option key={session} value={session}>
                             {getTranslatedLabel('sessions', session, language)}
                           </option>
@@ -1704,7 +2423,7 @@ function App() {
                           setTradeForm((current) => ({ ...current, timeframe: event.target.value }))
                         }
                       >
-                        {TIMEFRAMES.map((timeframe) => (
+                        {timeframeOptions.map((timeframe) => (
                           <option key={timeframe} value={timeframe}>
                             {getTranslatedLabel('timeframes', timeframe, language)}
                           </option>
@@ -1721,7 +2440,7 @@ function App() {
                           setTradeForm((current) => ({ ...current, emotion: event.target.value }))
                         }
                       >
-                        {EMOTIONS.map((emotion) => (
+                        {emotionOptions.map((emotion) => (
                           <option key={emotion} value={emotion}>
                             {getTranslatedLabel('emotions', emotion, language)}
                           </option>
@@ -1829,7 +2548,7 @@ function App() {
                     }
                   >
                     <option value="">{t.history.allPairs}</option>
-                    {PAIRS.map((pair) => (
+                    {pairOptions.map((pair) => (
                       <option key={pair} value={pair}>
                         {pair}
                       </option>
@@ -1857,7 +2576,7 @@ function App() {
                     }
                   >
                     <option value="">{t.history.allStrategies}</option>
-                    {STRATEGIES.map((strategy) => (
+                    {strategyOptions.map((strategy) => (
                       <option key={strategy} value={strategy}>
                         {getTranslatedLabel('strategies', strategy, language)}
                       </option>
@@ -1889,7 +2608,7 @@ function App() {
                     <tbody>
                       {trades.map((trade) => (
                         <tr key={trade.id} onClick={() => setSelectedTrade(trade)}>
-                          <td>{formatDateByLanguage(trade.date, language)}</td>
+                          <td>{formatDateByLanguage(trade.date, language, journalDateFormat)}</td>
                           <td className="td-pair">{trade.pair}</td>
                           <td>{trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}</td>
                           <td>{getTranslatedLabel('strategies', trade.strategy, language)}</td>
@@ -1937,6 +2656,24 @@ function App() {
                 </div>
               </div>
             </section>
+
+            <section className={`page ${activePage === 'settings' ? 'active' : ''}`}>
+              <SettingsPage
+                key={settingsPageKey}
+                language={language}
+                settingsData={settingsData}
+                optionSets={optionSets}
+                onSaveProfile={handleSaveProfileSettings}
+                onSaveTrading={handleSaveTradingSettings}
+                onSaveJournal={handleSaveJournalSettings}
+                onSaveRisk={handleSaveRiskSettings}
+                onSaveLists={handleSaveCustomLists}
+                onExportJson={handleExportJson}
+                onExportCsv={handleExportCsv}
+                onImportJson={handleImportJson}
+                onLogout={handleLogout}
+              />
+            </section>
           </div>
         </main>
       </div>
@@ -1968,7 +2705,7 @@ function App() {
               <div className="detail-item">
                 <div className="detail-key">{t.modal.date}</div>
                 <div className="detail-val">
-                  {formatDateByLanguage(selectedTrade.date, language, { year: 'numeric' })}
+                  {formatDateByLanguage(selectedTrade.date, language, journalDateFormat, { year: 'numeric' })}
                 </div>
               </div>
               <div className="detail-item">

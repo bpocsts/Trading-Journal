@@ -23,6 +23,26 @@
   --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
+:root[data-theme='light'] {
+  --bg0: #eef3fb;
+  --bg1: #f8fbff;
+  --bg2: #ffffff;
+  --bg3: #eef3fb;
+  --bg4: #e2eaf8;
+  --card: #ffffff;
+  --border: rgba(61, 97, 201, 0.12);
+  --border2: rgba(61, 97, 201, 0.24);
+  --accent: #446cff;
+  --accent2: #6b54ff;
+  --gold: #d59519;
+  --green: #0f9f6e;
+  --red: #dc4d5d;
+  --text: #15213e;
+  --text2: #56657f;
+  --text3: #8290a8;
+  --shadow: 0 16px 40px rgba(71, 100, 166, 0.12);
+}
+
 html, body, #root { height: 100%; min-height: 100%; }
 
 body {
@@ -32,6 +52,7 @@ body {
   overflow: hidden;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 /* ── SCROLLBAR ── */
@@ -142,9 +163,9 @@ body {
 }
 
 /* ── MAIN + CONTENT ── */
-.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
-.content { flex: 1; overflow: hidden; display: flex; min-width: 0; }
-.page { display: none; flex: 1; overflow: hidden; min-width: 0; }
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0; }
+.content { flex: 1; overflow: hidden; display: flex; min-width: 0; min-height: 0; }
+.page { display: none; flex: 1; overflow: hidden; min-width: 0; min-height: 0; }
 .page.active { display: flex; }
 
 /* ── DASHBOARD ── */
