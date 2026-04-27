@@ -305,6 +305,53 @@ npm run lint
 npm run build
 ```
 
+## GitHub Pages And Hostinger Domain
+
+This repo is now structured for GitHub Pages deployment through GitHub Actions.
+
+### What Is Included
+
+- Vite is configured with relative asset paths in [vite.config.js](/C:/Users/Nattaphon.nk/Documents/Trading-Journal-main/vite.config.js:1)
+- GitHub Pages workflow is included at [.github/workflows/deploy-pages.yml](/C:/Users/Nattaphon.nk/Documents/Trading-Journal-main/.github/workflows/deploy-pages.yml:1)
+- The workflow builds the app from `master` and publishes `dist`
+- If you add a repository variable named `CUSTOM_DOMAIN`, the workflow writes a `CNAME` file automatically
+
+### GitHub Setup
+
+1. Push this repository to GitHub.
+2. Open the repository on GitHub and go to `Settings -> Pages`.
+3. Under `Build and deployment`, choose `GitHub Actions`.
+4. Open `Settings -> Secrets and variables -> Actions -> Variables`.
+5. Add a repository variable named `CUSTOM_DOMAIN` with your real domain, for example `journal.yourdomain.com` or `yourdomain.com`.
+6. Push any new commit to `master` to trigger deployment.
+
+### Hostinger DNS Setup
+
+For a subdomain like `journal.yourdomain.com`:
+
+- Add a `CNAME` record for `journal` pointing to `bpocsts.github.io`
+
+For an apex domain like `yourdomain.com`:
+
+- Add `A` records pointing to `185.199.108.153`
+- Add `A` records pointing to `185.199.109.153`
+- Add `A` records pointing to `185.199.110.153`
+- Add `A` records pointing to `185.199.111.153`
+- Add a `CNAME` record for `www` pointing to `bpocsts.github.io`
+
+### Final GitHub Domain Step
+
+After DNS is added in Hostinger:
+
+1. Go back to `Settings -> Pages` on GitHub.
+2. Enter the same custom domain there.
+3. Wait for DNS verification and then enable `HTTPS`.
+
+GitHub's current guidance for custom domains and GitHub Pages is in the official docs:
+
+- [About custom domains and GitHub Pages](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/about-custom-domains-and-github-pages?apiVersion=2022-11-28)
+- [Managing a custom domain for your GitHub Pages site](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site?apiVersion=2022-11-28&platform=windows)
+- [Vite static deploy guide](https://vite.dev/guide/static-deploy.html)
 ## Roadmap Ideas
 
 - move Firebase config to environment variables

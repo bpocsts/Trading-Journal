@@ -51,6 +51,25 @@ export async function onAuthChange(callback) {
   return authModule.onAuthStateChanged(auth, callback)
 }
 
+export async function updateUserAccountBalance(uid, accountBalance) {
+  const { db, firestoreModule } = await getFirebaseServices()
+  const { doc, setDoc } = firestoreModule
+
+  await setDoc(
+    doc(db, 'users', uid),
+    {
+      accountBalance: Math.max(Number(accountBalance) || 0, 0),
+    },
+    { merge: true },
+  )
+}
+
+export async function updateUserPreferences(uid, preferences = {}) {
+  const { db, firestoreModule } = await getFirebaseServices()
+  const { doc, setDoc } = firestoreModule
+
+  await setDoc(doc(db, 'users', uid), preferences, { merge: true })
+}
 async function ensureUserProfileDoc(db, firestoreModule, uid, profile = {}) {
   const { doc, setDoc, serverTimestamp } = firestoreModule
 
@@ -67,6 +86,7 @@ async function ensureUserProfileDoc(db, firestoreModule, uid, profile = {}) {
       avgRR: 0,
       avgRisk: 0,
       accountBalance: 10000,
+      currencyCode: 'USD',
       createdAt: serverTimestamp(),
     },
     { merge: true },
