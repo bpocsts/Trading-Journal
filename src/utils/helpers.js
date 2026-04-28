@@ -128,36 +128,31 @@ export const calcRR = (entry, sl, tp, type = 'Buy') => {
   return parseFloat((tpDist / slDist).toFixed(2))
 }
 
-const DIRECT_PNL_MULTIPLIERS = {
-  XAUUSD: 100,
-  EURUSD: 100000,
-  GBPUSD: 100000,
-  AUDUSD: 100000,
-  BTCUSD: 1,
-  ETHUSD: 1,
-  NASDAQ: 1,
-  SP500: 1,
+const PAIR_PIP_CONFIG = {
+  XAUUSD: { pipSize: 0.1, pipValuePerLot: 10 },
+  EURUSD: { pipSize: 0.0001, pipValuePerLot: 10 },
+  GBPUSD: { pipSize: 0.0001, pipValuePerLot: 10 },
+  USDJPY: { pipSize: 0.01, pipValuePerLot: 9 },
+  BTCUSD: { pipSize: 1, pipValuePerLot: 1 },
+  GBPJPY: { pipSize: 0.01, pipValuePerLot: 9 },
+  AUDUSD: { pipSize: 0.0001, pipValuePerLot: 10 },
+  USDCAD: { pipSize: 0.0001, pipValuePerLot: 10 },
+  NASDAQ: { pipSize: 1, pipValuePerLot: 5 },
+  SP500: { pipSize: 1, pipValuePerLot: 10 },
+  ETHUSD: { pipSize: 1, pipValuePerLot: 1 },
 }
 
-const PRICE_CONVERTED_PNL_MULTIPLIERS = {
-  USDJPY: 100000,
-  USDCAD: 100000,
-}
+const getPairPipConfig = (pair = '') => PAIR_PIP_CONFIG[pair] || { pipSize: 1, pipValuePerLot: 1 }
 
-const getPnlMultiplier = (pair = '', referencePrice = 0) => {
-  if (DIRECT_PNL_MULTIPLIERS[pair]) return DIRECT_PNL_MULTIPLIERS[pair]
+export const calculatePipDistance = (fromPrice = 0, toPrice = 0, pair = '') => {
+  const numericFrom = Number(fromPrice)
+  const numericTo = Number(toPrice)
+  if (!Number.isFinite(numericFrom) || !Number.isFinite(numericTo)) return 0
 
-  if (PRICE_CONVERTED_PNL_MULTIPLIERS[pair]) {
-    const safePrice = Math.abs(Number(referencePrice)) || 1
-    return PRICE_CONVERTED_PNL_MULTIPLIERS[pair] / safePrice
-  }
+  const { pipSize } = getPairPipConfig(pair)
+  if (!pipSize) return 0
 
-  if (pair.endsWith('JPY')) {
-    const safePrice = Math.abs(Number(referencePrice)) || 1
-    return 100000 / safePrice
-  }
-
-  return 1
+  return Math.abs(numericTo - numericFrom) / pipSize
 }
 
 export const calculateTradePnl = ({
@@ -179,10 +174,11 @@ export const calculateTradePnl = ({
 
   const exitPrice = result === 'Win' ? numericTp : numericSl
   const direction = type === 'Buy' ? 1 : -1
-  const priceMove = (exitPrice - numericEntry) * direction
-  const multiplier = getPnlMultiplier(pair, exitPrice || numericEntry)
+  const pipDistance = calculatePipDistance(numericEntry, exitPrice, pair)
+  const { pipValuePerLot } = getPairPipConfig(pair)
+  const grossPnl = pipDistance * numericLot * pipValuePerLot
 
-  return parseFloat((priceMove * numericLot * multiplier).toFixed(2))
+  return parseFloat((grossPnl * direction * Math.sign(exitPrice - numericEntry)).toFixed(2))
 }
 
 export const suggestSessionFromDate = (date, fallback = 'London') => {
