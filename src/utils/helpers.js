@@ -118,6 +118,19 @@ export const calcRR = (entry, sl, tp) => {
   return parseFloat((tpDist / slDist).toFixed(2))
 }
 
+export const suggestSessionFromDate = (date, fallback = 'London') => {
+  const parsed = new Date(date)
+  if (Number.isNaN(parsed.getTime())) return fallback
+
+  const hour = parsed.getHours()
+
+  if (hour >= 7 && hour < 12) return 'London'
+  if (hour >= 12 && hour < 16) return 'London/NY Overlap'
+  if (hour >= 16 && hour < 21) return 'New York'
+  if (hour >= 0 && hour < 7) return 'Tokyo'
+  return 'Sydney'
+}
+
 export const normalizeTags = (tags) => {
   if (Array.isArray(tags)) {
     return tags

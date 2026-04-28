@@ -25,6 +25,7 @@ import {
   PAIR_EMOJI,
   PAIRS,
   SESSIONS,
+  suggestSessionFromDate,
   TIMEFRAMES,
   STRATEGIES,
   EMOTIONS,
@@ -486,11 +487,8 @@ function createInitialTradeForm(defaults = {}) {
     sl: '2640',
     tp: '2675',
     lot: '0.50',
-    riskPercent: '1.00',
     result: 'Win',
-    pnl: '250.00',
     strategy: defaults.defaultStrategy || 'SMC',
-    session: defaults.defaultSession || 'London',
     timeframe: defaults.defaultTimeframe || 'M15',
     emotion: defaults.defaultEmotion || 'Calm',
     followPlan: 'Yes',
@@ -653,6 +651,7 @@ function AnimatedMetric({ value, format, className }) {
 }
 
 function App() {
+  const HISTORY_PAGE_SIZE = 10
   const navigate = useNavigate()
   const location = useLocation()
   const { theme, setTheme } = useTheme()
@@ -668,6 +667,9 @@ function App() {
   const [toast, setToast] = useState('')
   const [selectedTrade, setSelectedTrade] = useState(null)
   const [submittingTrade, setSubmittingTrade] = useState(false)
+  const [historyTrades, setHistoryTrades] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyPage, setHistoryPage] = useState(1)
   const [demoAccountBalance, setDemoAccountBalance] = useState(
     DEMO_SUMMARY.accountBalance + buildDashboardAnalytics(DEMO_TRADES).totalProfit,
   )
@@ -687,7 +689,7 @@ function App() {
   )
 
   const activeUid = isDemo ? 'demo-user' : user?.uid
-  const { trades, loading: tradesLoading, hasMore, loadTrades, loadAllTrades, addTrade, removeTrade } =
+  const { trades, loading: tradesLoading, loadTrades, loadAllTrades, addTrade, removeTrade } =
     useTrades(activeUid, isDemo)
 
   useEffect(() => {
@@ -707,6 +709,40 @@ function App() {
       navigate(PAGE_ROUTES.dashboard, { replace: true })
     }
   }, [isDemo, location.pathname, navigate, user])
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function prepareHistoryTrades() {
+      if (activePage !== 'history' || !activeUid) return
+
+      const hasFilters = Boolean(filters.pair || filters.result || filters.strategy)
+
+      if (isDemo || hasFilters) {
+        setHistoryTrades(trades)
+        return
+      }
+
+      setHistoryLoading(true)
+      try {
+        const allTrades = await loadAllTrades()
+        if (!isMounted) return
+
+        const sortedTrades = [...allTrades].sort(
+          (left, right) => new Date(right.date) - new Date(left.date),
+        )
+        setHistoryTrades(sortedTrades)
+      } finally {
+        if (isMounted) setHistoryLoading(false)
+      }
+    }
+
+    prepareHistoryTrades()
+
+    return () => {
+      isMounted = false
+    }
+  }, [activePage, activeUid, filters.pair, filters.result, filters.strategy, isDemo, loadAllTrades, trades])
 
   const rr = useMemo(
     () => calcRR(Number(tradeForm.entry), Number(tradeForm.sl), Number(tradeForm.tp)),
@@ -742,6 +778,25 @@ function App() {
   )
   const emotionOptions = useMemo(() => Array.from(new Set([...EMOTIONS, ...customEmotions])), [customEmotions])
   const journalDateFormat = journalPreferences.dateFormat || ''
+
+  const calculatedRiskPercent = useMemo(() => {
+    const configuredRisk = Number(riskSettings.targetRiskPerTrade)
+    if (configuredRisk > 0) return parseFloat(configuredRisk.toFixed(2))
+    return 1
+  }, [riskSettings.targetRiskPerTrade])
+
+  const calculatedSession = useMemo(
+    () => suggestSessionFromDate(tradeForm.date, tradingPreferences.defaultSession || 'London'),
+    [tradeForm.date, tradingPreferences.defaultSession],
+  )
+
+  const calculatedPnl = useMemo(() => {
+    const riskAmount = accountBalance * (calculatedRiskPercent / 100)
+    if (!riskAmount) return 0
+    if (tradeForm.result === 'Loss') return parseFloat((-riskAmount).toFixed(2))
+    if (tradeForm.result === 'BE') return 0
+    return parseFloat((riskAmount * rr).toFixed(2))
+  }, [accountBalance, calculatedRiskPercent, rr, tradeForm.result])
 
   const summary = useMemo(() => {
     const displayName =
@@ -973,6 +1028,17 @@ function App() {
   )
   const settingsPageKey = useMemo(() => JSON.stringify(settingsData), [settingsData])
   const isInitialTradesLoading = tradesLoading && !trades.length
+  const historyTotalPages = Math.max(1, Math.ceil(historyTrades.length / HISTORY_PAGE_SIZE))
+  const currentHistoryPage = Math.min(historyPage, historyTotalPages)
+  const historyStartIndex = historyTrades.length
+    ? (currentHistoryPage - 1) * HISTORY_PAGE_SIZE + 1
+    : 0
+  const historyEndIndex = Math.min(currentHistoryPage * HISTORY_PAGE_SIZE, historyTrades.length)
+  const visibleHistoryTrades = useMemo(() => {
+    const startIndex = (currentHistoryPage - 1) * HISTORY_PAGE_SIZE
+    return historyTrades.slice(startIndex, startIndex + HISTORY_PAGE_SIZE)
+  }, [currentHistoryPage, historyTrades])
+  const isHistoryLoading = activePage === 'history' && (historyLoading || (tradesLoading && !historyTrades.length))
 
   async function persistProfileUpdates(updates) {
     if (isDemo || !user?.uid) return
@@ -1202,9 +1268,10 @@ function App() {
         sl: Number(tradeForm.sl),
         tp: Number(tradeForm.tp),
         lot: Number(tradeForm.lot),
-        riskPercent: Number(tradeForm.riskPercent),
+        riskPercent: calculatedRiskPercent,
         rr,
-        pnl: Number(tradeForm.pnl),
+        pnl: calculatedPnl,
+        session: calculatedSession,
         tags: normalizeTags(tradeForm.tags),
       }
 
@@ -1362,12 +1429,43 @@ function App() {
       <div className="app">
         <aside className="sidebar">
           <div className="logo">
-            <div className="logo-icon">T</div>
-            <div>
-              <div className="logo-text">{t.general.appName}</div>
-              <div className="logo-sub">
-                {isDemo ? t.general.demoWorkspace : t.general.liveWorkspace}
+            <div className="logo-main">
+              <div className="logo-icon">T</div>
+              <div>
+                <div className="logo-text">{t.general.appName}</div>
+                <div className="logo-sub">
+                  {isDemo ? t.general.demoWorkspace : t.general.liveWorkspace}
+                </div>
               </div>
+            </div>
+            <div className="logo-mobile-actions">
+              <div className="language-toggle sidebar-language-toggle">
+              <button
+                type="button"
+                className={`lang-btn ${language === 'th' ? 'active' : ''}`}
+                onClick={() => setLanguage('th')}
+              >
+                ไทย
+              </button>
+              <button
+                type="button"
+                className={`lang-btn ${language === 'en' ? 'active' : ''}`}
+                onClick={() => setLanguage('en')}
+              >
+                English
+              </button>
+              </div>
+              <button
+                type="button"
+                className="user-row action-row logo-user-row"
+                onClick={handleLogout}
+                title={summary.displayName}
+                aria-label={summary.displayName}
+              >
+                <div className="avatar avatar-small">
+                  {summary.displayName.slice(0, 1).toUpperCase()}
+                </div>
+              </button>
             </div>
           </div>
 
@@ -1406,14 +1504,14 @@ function App() {
           </div>
         </aside>
 
-        <main className="main">
+        <main className={`main ${activePage === 'history' ? 'main-history-mobile-lock' : ''}`}>
           <header className="topbar">
             <div>
               <strong>{getGreetingByLanguage(language)}</strong>
               <span className="topbar-subtitle"> {t.general.reviewExecution}</span>
             </div>
             <div className="topbar-right">
-              <div className="language-toggle">
+              <div className="language-toggle topbar-language-toggle">
                 <button
                   type="button"
                   className={`lang-btn ${language === 'th' ? 'active' : ''}`}
@@ -2205,347 +2303,433 @@ function App() {
                   <p>{t.addTrade.subtitle}</p>
                 </div>
 
-                <form onSubmit={handleTradeSubmit}>
-                  <div className="section-divider">{t.addTrade.sectionSetup}</div>
-                  <div className="form-grid">
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.date}</span>
-                      <input
-                        className="form-input"
-                        type="datetime-local"
-                        value={tradeForm.date}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, date: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
+                <div className="add-trade-layout">
+                  <form className="add-trade-form" onSubmit={handleTradeSubmit}>
+                    <div className="section-divider">{t.addTrade.sectionSetup}</div>
+                    <div className="form-grid">
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.date}</span>
+                        <input
+                          className="form-input"
+                          type="datetime-local"
+                          value={tradeForm.date}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, date: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
 
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.pair}</span>
-                      <select
-                        className="form-input"
-                        value={tradeForm.pair}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, pair: event.target.value }))
-                        }
-                      >
-                        {pairOptions.map((pair) => (
-                          <option key={pair} value={pair}>
-                            {pair}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.pair}</span>
+                        <select
+                          className="form-input"
+                          value={tradeForm.pair}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, pair: event.target.value }))
+                          }
+                        >
+                          {pairOptions.map((pair) => (
+                            <option key={pair} value={pair}>
+                              {pair}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
 
-                    <div className="form-group">
-                      <span className="form-label">{t.addTrade.type}</span>
-                      <div className="toggle-group">
-                        {[
-                          { value: 'Buy', label: t.addTrade.buy },
-                          { value: 'Sell', label: t.addTrade.sell },
-                        ].map((item) => (
-                          <button
-                            key={item.value}
-                            type="button"
-                            className={`toggle-btn ${
-                              tradeForm.type === item.value
-                                ? item.value === 'Buy'
-                                  ? 'buy-active'
-                                  : 'sell-active'
-                                : ''
-                            }`}
-                            onClick={() =>
-                              setTradeForm((current) => ({ ...current, type: item.value }))
-                            }
-                          >
-                            {item.label}
-                          </button>
-                        ))}
+                      <div className="form-group">
+                        <span className="form-label">{t.addTrade.type}</span>
+                        <div className="toggle-group">
+                          {[
+                            { value: 'Buy', label: t.addTrade.buy },
+                            { value: 'Sell', label: t.addTrade.sell },
+                          ].map((item) => (
+                            <button
+                              key={item.value}
+                              type="button"
+                              className={`toggle-btn ${
+                                tradeForm.type === item.value
+                                  ? item.value === 'Buy'
+                                    ? 'buy-active'
+                                    : 'sell-active'
+                                  : ''
+                              }`}
+                              onClick={() =>
+                                setTradeForm((current) => ({ ...current, type: item.value }))
+                              }
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="form-group">
+                        <span className="form-label">{t.addTrade.result}</span>
+                        <div className="toggle-group">
+                          {[
+                            { value: 'Win', label: t.addTrade.win },
+                            { value: 'Loss', label: t.addTrade.loss },
+                            { value: 'BE', label: t.addTrade.be },
+                          ].map((item) => (
+                            <button
+                              key={item.value}
+                              type="button"
+                              className={`toggle-btn ${
+                                tradeForm.result === item.value
+                                  ? item.value === 'Win'
+                                    ? 'win-active'
+                                    : item.value === 'Loss'
+                                      ? 'loss-active'
+                                      : 'be-active'
+                                  : ''
+                              }`}
+                              onClick={() =>
+                                setTradeForm((current) => ({ ...current, result: item.value }))
+                              }
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.entry}</span>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={tradeForm.entry}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, entry: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.stopLoss}</span>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={tradeForm.sl}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, sl: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.takeProfit}</span>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={tradeForm.tp}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, tp: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.pnl}</span>
+                        <input
+                          className="form-input auto-calculated-input"
+                          type="number"
+                          step="0.01"
+                          value={calculatedPnl.toFixed(2)}
+                          readOnly
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.lotSize}</span>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={tradeForm.lot}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, lot: event.target.value }))
+                          }
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.riskPercent}</span>
+                        <input
+                          className="form-input auto-calculated-input"
+                          type="number"
+                          step="0.01"
+                          value={calculatedRiskPercent.toFixed(2)}
+                          readOnly
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.strategy}</span>
+                        <select
+                          className="form-input"
+                          value={tradeForm.strategy}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, strategy: event.target.value }))
+                          }
+                        >
+                          {strategyOptions.map((strategy) => (
+                            <option key={strategy} value={strategy}>
+                              {getTranslatedLabel('strategies', strategy, language)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.session}</span>
+                        <input
+                          className="form-input auto-calculated-input"
+                          type="text"
+                          value={getTranslatedLabel('sessions', calculatedSession, language)}
+                          readOnly
+                        />
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.timeframe}</span>
+                        <select
+                          className="form-input"
+                          value={tradeForm.timeframe}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, timeframe: event.target.value }))
+                          }
+                        >
+                          {timeframeOptions.map((timeframe) => (
+                            <option key={timeframe} value={timeframe}>
+                              {getTranslatedLabel('timeframes', timeframe, language)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="form-group">
+                        <span className="form-label">{t.addTrade.emotion}</span>
+                        <select
+                          className="form-input"
+                          value={tradeForm.emotion}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, emotion: event.target.value }))
+                          }
+                        >
+                          {emotionOptions.map((emotion) => (
+                            <option key={emotion} value={emotion}>
+                              {getTranslatedLabel('emotions', emotion, language)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <div className="form-group">
+                        <span className="form-label">{t.addTrade.followedPlan}</span>
+                        <div className="toggle-group">
+                          {[
+                            { value: 'Yes', label: t.addTrade.yes },
+                            { value: 'No', label: t.addTrade.no },
+                          ].map((item) => (
+                            <button
+                              key={item.value}
+                              type="button"
+                              className={`toggle-btn ${
+                                tradeForm.followPlan === item.value
+                                  ? item.value === 'Yes'
+                                    ? 'yes-active'
+                                    : 'no-active'
+                                  : ''
+                              }`}
+                              onClick={() =>
+                                setTradeForm((current) => ({ ...current, followPlan: item.value }))
+                              }
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <label className="form-group full">
+                        <span className="form-label">{t.addTrade.tags}</span>
+                        <input
+                          className="form-input"
+                          type="text"
+                          value={tradeForm.tags}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, tags: event.target.value }))
+                          }
+                          placeholder={t.addTrade.tagsPlaceholder}
+                        />
+                      </label>
+
+                      <label className="form-group full">
+                        <span className="form-label">{t.addTrade.notes}</span>
+                        <textarea
+                          className="form-input textarea-input"
+                          rows="4"
+                          value={tradeForm.note}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, note: event.target.value }))
+                          }
+                          placeholder={t.addTrade.notesPlaceholder}
+                        ></textarea>
+                      </label>
+                    </div>
+
+                    <div className="rr-display">
+                      <div>
+                        <div className="form-label">{t.addTrade.calculatedRr}</div>
+                        <div
+                          className={`rr-value ${
+                            rr >= 2 ? 'rr-good' : rr >= 1 ? 'rr-ok' : 'rr-bad'
+                          }`}
+                        >
+                          {formatRR(rr)}
+                        </div>
+                      </div>
+                      <div className="rr-bar-wrap">
+                        <div
+                          className="rr-bar-fill"
+                          style={{
+                            width: `${Math.min(rr * 30, 100)}%`,
+                            background:
+                              rr >= 2 ? 'var(--green)' : rr >= 1 ? 'var(--gold)' : 'var(--red)',
+                          }}
+                        ></div>
                       </div>
                     </div>
 
-                    <div className="form-group">
-                      <span className="form-label">{t.addTrade.result}</span>
-                      <div className="toggle-group">
-                        {[
-                          { value: 'Win', label: t.addTrade.win },
-                          { value: 'Loss', label: t.addTrade.loss },
-                          { value: 'BE', label: t.addTrade.be },
-                        ].map((item) => (
-                          <button
-                            key={item.value}
-                            type="button"
-                            className={`toggle-btn ${
-                              tradeForm.result === item.value
-                                ? item.value === 'Win'
-                                  ? 'win-active'
-                                  : item.value === 'Loss'
-                                    ? 'loss-active'
-                                    : 'be-active'
-                                : ''
-                            }`}
-                            onClick={() =>
-                              setTradeForm((current) => ({ ...current, result: item.value }))
-                            }
-                          >
-                            {item.label}
-                          </button>
-                        ))}
+                    <button type="submit" className="submit-btn" disabled={submittingTrade}>
+                      {submittingTrade ? t.addTrade.savingTrade : t.addTrade.saveTrade}
+                    </button>
+                  </form>
+
+                  <aside className="add-trade-side">
+                    <div className="dashboard-panel add-trade-summary-card">
+                      <div className="dashboard-panel-head dashboard-panel-head-tight">
+                        <div>
+                          <div className="panel-eyebrow">
+                            {language === 'th' ? 'ภาพรวมรายการ' : 'Trade Snapshot'}
+                          </div>
+                          <h3>{tradeForm.pair || t.general.noValue}</h3>
+                        </div>
+                        <span className={`panel-badge ${tradeForm.type === 'Buy' ? 'badge-positive' : 'badge-accent'}`}>
+                          {tradeForm.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}
+                        </span>
+                      </div>
+
+                      <div className="add-trade-side-grid">
+                        <div className="add-trade-side-metric">
+                          <span>{t.addTrade.result}</span>
+                          <strong>{getTranslatedLabel('results', tradeForm.result, language)}</strong>
+                        </div>
+                        <div className="add-trade-side-metric">
+                          <span>{t.addTrade.strategy}</span>
+                          <strong>{getTranslatedLabel('strategies', tradeForm.strategy, language)}</strong>
+                        </div>
+                        <div className="add-trade-side-metric">
+                          <span>{t.addTrade.timeframe}</span>
+                          <strong>{getTranslatedLabel('timeframes', tradeForm.timeframe, language)}</strong>
+                        </div>
+                          <div className="add-trade-side-metric">
+                            <span>{t.addTrade.session}</span>
+                            <strong>{getTranslatedLabel('sessions', calculatedSession, language)}</strong>
+                          </div>
                       </div>
                     </div>
 
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.entry}</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        step="0.01"
-                        value={tradeForm.entry}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, entry: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
+                    <div className="dashboard-panel add-trade-summary-card">
+                      <div className="dashboard-panel-head">
+                        <div>
+                          <div className="panel-eyebrow">
+                            {language === 'th' ? 'ความเสี่ยงและผลตอบแทน' : 'Risk & Reward'}
+                          </div>
+                          <h3>{formatRR(rr)}</h3>
+                        </div>
+                        <span className={`panel-badge ${rr >= 2 ? 'badge-positive' : 'badge-accent'}`}>
+                          {rr >= 2 ? 'Strong' : rr >= 1 ? 'Balanced' : 'Tight'}
+                        </span>
+                      </div>
 
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.stopLoss}</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        step="0.01"
-                        value={tradeForm.sl}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, sl: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.takeProfit}</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        step="0.01"
-                        value={tradeForm.tp}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, tp: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.pnl}</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        step="0.01"
-                        value={tradeForm.pnl}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, pnl: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.lotSize}</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        step="0.01"
-                        value={tradeForm.lot}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, lot: event.target.value }))
-                        }
-                      />
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.riskPercent}</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        step="0.01"
-                        value={tradeForm.riskPercent}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({
-                            ...current,
-                            riskPercent: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.strategy}</span>
-                      <select
-                        className="form-input"
-                        value={tradeForm.strategy}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, strategy: event.target.value }))
-                        }
-                      >
-                        {strategyOptions.map((strategy) => (
-                          <option key={strategy} value={strategy}>
-                            {getTranslatedLabel('strategies', strategy, language)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.session}</span>
-                      <select
-                        className="form-input"
-                        value={tradeForm.session}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, session: event.target.value }))
-                        }
-                      >
-                        {sessionOptions.map((session) => (
-                          <option key={session} value={session}>
-                            {getTranslatedLabel('sessions', session, language)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.timeframe}</span>
-                      <select
-                        className="form-input"
-                        value={tradeForm.timeframe}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, timeframe: event.target.value }))
-                        }
-                      >
-                        {timeframeOptions.map((timeframe) => (
-                          <option key={timeframe} value={timeframe}>
-                            {getTranslatedLabel('timeframes', timeframe, language)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="form-group">
-                      <span className="form-label">{t.addTrade.emotion}</span>
-                      <select
-                        className="form-input"
-                        value={tradeForm.emotion}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, emotion: event.target.value }))
-                        }
-                      >
-                        {emotionOptions.map((emotion) => (
-                          <option key={emotion} value={emotion}>
-                            {getTranslatedLabel('emotions', emotion, language)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <div className="form-group">
-                      <span className="form-label">{t.addTrade.followedPlan}</span>
-                      <div className="toggle-group">
-                        {[
-                          { value: 'Yes', label: t.addTrade.yes },
-                          { value: 'No', label: t.addTrade.no },
-                        ].map((item) => (
-                          <button
-                            key={item.value}
-                            type="button"
-                            className={`toggle-btn ${
-                              tradeForm.followPlan === item.value
-                                ? item.value === 'Yes'
-                                  ? 'yes-active'
-                                  : 'no-active'
-                                : ''
-                            }`}
-                            onClick={() =>
-                              setTradeForm((current) => ({ ...current, followPlan: item.value }))
-                            }
-                          >
-                            {item.label}
-                          </button>
-                        ))}
+                      <div className="add-trade-side-list">
+                        <div className="add-trade-side-row">
+                          <span>{t.addTrade.entry}</span>
+                          <strong>{tradeForm.entry || t.general.noValue}</strong>
+                        </div>
+                        <div className="add-trade-side-row">
+                          <span>{t.addTrade.stopLoss}</span>
+                          <strong>{tradeForm.sl || t.general.noValue}</strong>
+                        </div>
+                        <div className="add-trade-side-row">
+                          <span>{t.addTrade.takeProfit}</span>
+                          <strong>{tradeForm.tp || t.general.noValue}</strong>
+                        </div>
+                          <div className="add-trade-side-row">
+                            <span>{t.addTrade.riskPercent}</span>
+                            <strong>{`${calculatedRiskPercent.toFixed(2)}%`}</strong>
+                          </div>
+                          <div className="add-trade-side-row">
+                            <span>{t.addTrade.pnl}</span>
+                            <strong>{formatPnl(calculatedPnl, currencyCode)}</strong>
+                          </div>
                       </div>
                     </div>
 
-                    <label className="form-group full">
-                      <span className="form-label">{t.addTrade.tags}</span>
-                      <input
-                        className="form-input"
-                        type="text"
-                        value={tradeForm.tags}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, tags: event.target.value }))
-                        }
-                        placeholder={t.addTrade.tagsPlaceholder}
-                      />
-                    </label>
+                    <div className="dashboard-panel add-trade-summary-card">
+                      <div className="dashboard-panel-head">
+                        <div>
+                          <div className="panel-eyebrow">
+                            {language === 'th' ? 'เช็คลิสต์ก่อนบันทึก' : 'Pre-save Check'}
+                          </div>
+                          <h3>{language === 'th' ? 'ทบทวนสั้นๆ' : 'Quick Review'}</h3>
+                        </div>
+                      </div>
 
-                    <label className="form-group full">
-                      <span className="form-label">{t.addTrade.notes}</span>
-                      <textarea
-                        className="form-input textarea-input"
-                        rows="4"
-                        value={tradeForm.note}
-                        onChange={(event) =>
-                          setTradeForm((current) => ({ ...current, note: event.target.value }))
-                        }
-                        placeholder={t.addTrade.notesPlaceholder}
-                      ></textarea>
-                    </label>
-                  </div>
-
-                  <div className="rr-display">
-                    <div>
-                      <div className="form-label">{t.addTrade.calculatedRr}</div>
-                      <div
-                        className={`rr-value ${
-                          rr >= 2 ? 'rr-good' : rr >= 1 ? 'rr-ok' : 'rr-bad'
-                        }`}
-                      >
-                        {formatRR(rr)}
+                      <div className="add-trade-side-list">
+                        <div className="add-trade-side-row">
+                          <span>{language === 'th' ? 'ทำตามแผน' : 'Plan Status'}</span>
+                          <strong>{tradeForm.followPlan === 'Yes' ? t.addTrade.yes : t.addTrade.no}</strong>
+                        </div>
+                        <div className="add-trade-side-row">
+                          <span>{t.addTrade.emotion}</span>
+                          <strong>{getTranslatedLabel('emotions', tradeForm.emotion, language)}</strong>
+                        </div>
+                        <div className="add-trade-side-row">
+                          <span>{language === 'th' ? 'แท็ก' : 'Tags'}</span>
+                          <strong>{tradeForm.tags || t.general.noValue}</strong>
+                        </div>
                       </div>
                     </div>
-                    <div className="rr-bar-wrap">
-                      <div
-                        className="rr-bar-fill"
-                        style={{
-                          width: `${Math.min(rr * 30, 100)}%`,
-                          background:
-                            rr >= 2 ? 'var(--green)' : rr >= 1 ? 'var(--gold)' : 'var(--red)',
-                        }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <button type="submit" className="submit-btn" disabled={submittingTrade}>
-                    {submittingTrade ? t.addTrade.savingTrade : t.addTrade.saveTrade}
-                  </button>
-                </form>
+                  </aside>
+                </div>
               </div>
             </section>
 
-            <section className={`page ${activePage === 'history' ? 'active' : ''}`}>
+            <section className={`page history-page-shell ${activePage === 'history' ? 'active' : ''}`}>
               <div className="history-page">
                 <div className="page-header">
                   <h2>{t.history.title}</h2>
                   <p>{t.history.subtitle}</p>
                 </div>
 
-                <div className="filters-bar">
+                <div className="filters-bar history-filters-mobile">
                   <select
                     className="filter-select"
                     value={filters.pair}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      setHistoryPage(1)
                       setFilters((current) => ({ ...current, pair: event.target.value }))
-                    }
+                    }}
                   >
                     <option value="">{t.history.allPairs}</option>
                     {pairOptions.map((pair) => (
@@ -2558,9 +2742,10 @@ function App() {
                   <select
                     className="filter-select"
                     value={filters.result}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      setHistoryPage(1)
                       setFilters((current) => ({ ...current, result: event.target.value }))
-                    }
+                    }}
                   >
                     <option value="">{t.history.allResults}</option>
                     <option value="Win">{t.addTrade.win}</option>
@@ -2571,9 +2756,10 @@ function App() {
                   <select
                     className="filter-select"
                     value={filters.strategy}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      setHistoryPage(1)
                       setFilters((current) => ({ ...current, strategy: event.target.value }))
-                    }
+                    }}
                   >
                     <option value="">{t.history.allStrategies}</option>
                     {strategyOptions.map((strategy) => (
@@ -2585,74 +2771,165 @@ function App() {
 
                   <button
                     type="button"
-                    className="period-btn"
-                    onClick={() => setFilters({ pair: '', result: '', strategy: '' })}
+                    className="period-btn filter-reset-btn"
+                    onClick={() => {
+                      setHistoryPage(1)
+                      setFilters({ pair: '', result: '', strategy: '' })
+                    }}
+                    aria-label={t.general.resetFilters}
+                    title={t.general.resetFilters}
                   >
-                    {t.general.resetFilters}
+                    ↺
                   </button>
                 </div>
 
-                <div className="table-card">
-                  <table className="trades-table">
-                    <thead>
-                      <tr>
-                        <th>{t.history.date}</th>
-                        <th>{t.history.pair}</th>
-                        <th>{t.history.type}</th>
-                        <th>{t.history.strategy}</th>
-                        <th>{t.history.result}</th>
-                        <th>{t.history.rr}</th>
-                        <th>{t.history.pnl}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trades.map((trade) => (
-                        <tr key={trade.id} onClick={() => setSelectedTrade(trade)}>
-                          <td>{formatDateByLanguage(trade.date, language, journalDateFormat)}</td>
-                          <td className="td-pair">{trade.pair}</td>
-                          <td>{trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}</td>
-                          <td>{getTranslatedLabel('strategies', trade.strategy, language)}</td>
-                          <td>
-                            <span
-                              className={`result-badge ${
-                                trade.result === 'Win'
-                                  ? 'result-win'
-                                  : trade.result === 'Loss'
-                                    ? 'result-loss'
-                                    : 'result-be'
-                              }`}
-                            >
-                              {getTranslatedLabel('results', trade.result, language)}
-                            </span>
-                          </td>
-                          <td className={trade.rr >= 2 ? 'td-rr-good' : 'td-rr-bad'}>
-                            {formatRR(trade.rr || 0)}
-                          </td>
-                          <td className={trade.pnl >= 0 ? 'td-pnl-pos' : 'td-pnl-neg'}>
-                            {formatPnl(trade.pnl, currencyCode)}
-                          </td>
+                <div className="history-results-shell">
+                  <div className="table-card">
+                      <table className="trades-table">
+                        <thead>
+                          <tr>
+                          <th>{t.history.date}</th>
+                          <th>{t.history.pair}</th>
+                          <th>{t.history.type}</th>
+                          <th>{t.history.strategy}</th>
+                          <th>{t.history.result}</th>
+                          <th>{t.history.rr}</th>
+                          <th>{t.history.pnl}</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {visibleHistoryTrades.map((trade) => (
+                          <tr key={trade.id} onClick={() => setSelectedTrade(trade)}>
+                            <td>{formatDateByLanguage(trade.date, language, journalDateFormat)}</td>
+                            <td className="td-pair">{trade.pair}</td>
+                            <td>{trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}</td>
+                            <td>{getTranslatedLabel('strategies', trade.strategy, language)}</td>
+                            <td>
+                              <span
+                                className={`result-badge ${
+                                  trade.result === 'Win'
+                                    ? 'result-win'
+                                    : trade.result === 'Loss'
+                                      ? 'result-loss'
+                                      : 'result-be'
+                                }`}
+                              >
+                                {getTranslatedLabel('results', trade.result, language)}
+                              </span>
+                            </td>
+                            <td className={trade.rr >= 2 ? 'td-rr-good' : 'td-rr-bad'}>
+                              {formatRR(trade.rr || 0)}
+                            </td>
+                            <td className={trade.pnl >= 0 ? 'td-pnl-pos' : 'td-pnl-neg'}>
+                              {formatPnl(trade.pnl, currencyCode)}
+                            </td>
+                          </tr>
+                          ))}
+                        </tbody>
+                      </table>
 
-                  {!trades.length ? (
-                    <div className="empty-state">
-                      <strong>{t.history.noMatches}</strong>
-                      <p>{t.history.changeFilters}</p>
+                      {!isHistoryLoading && historyTrades.length ? (
+                        <div className="history-mobile-list">
+                          {visibleHistoryTrades.map((trade) => (
+                            <div
+                              key={`mobile-${trade.id}`}
+                              className="history-mobile-card"
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => setSelectedTrade(trade)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  setSelectedTrade(trade)
+                                }
+                              }}
+                            >
+                              <div className="history-mobile-top">
+                                <div className="history-mobile-copy">
+                                  <strong>{trade.pair}</strong>
+                                  <span>
+                                    {formatDateByLanguage(trade.date, language, journalDateFormat)} ·{' '}
+                                    {getTranslatedLabel('strategies', trade.strategy, language)}
+                                  </span>
+                                </div>
+                                <div
+                                  className={`history-mobile-pnl ${
+                                    trade.pnl >= 0 ? 'text-profit' : 'text-loss'
+                                  }`}
+                                >
+                                  {formatPnl(trade.pnl, currencyCode)}
+                                </div>
+                              </div>
+
+                              <div className="history-mobile-meta">
+                                <span
+                                  className={`history-mobile-badge ${
+                                    trade.result === 'Win'
+                                      ? 'history-mobile-badge-win'
+                                      : trade.result === 'Loss'
+                                        ? 'history-mobile-badge-loss'
+                                        : 'history-mobile-badge-be'
+                                  }`}
+                                >
+                                  {getTranslatedLabel('results', trade.result, language)}
+                                </span>
+                                <span>{trade.type === 'Buy' ? t.addTrade.buy : t.addTrade.sell}</span>
+                                <span>{formatRR(trade.rr || 0)}</span>
+                                <span>{getTranslatedLabel('sessions', trade.session, language)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      {isHistoryLoading ? (
+                        <div className="empty-state">
+                        <strong>{t.dashboard.loadingTrades}</strong>
+                      </div>
+                    ) : null}
+
+                    {!isHistoryLoading && !historyTrades.length ? (
+                      <div className="empty-state">
+                        <strong>{t.history.noMatches}</strong>
+                        <p>{t.history.changeFilters}</p>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {!isHistoryLoading && historyTrades.length ? (
+                    <div className="pagination history-pagination">
+                      <button
+                        type="button"
+                        className="period-btn history-page-btn"
+                        onClick={() => setHistoryPage((current) => Math.max(1, current - 1))}
+                        disabled={currentHistoryPage === 1}
+                        aria-label={language === 'th' ? 'หน้าก่อนหน้า' : 'Previous page'}
+                      >
+                        {language === 'th' ? 'ก่อนหน้า' : 'Prev'}
+                      </button>
+                      <div className="history-pagination-meta">
+                        <span className="history-pagination-label">
+                          {language === 'th'
+                            ? `แสดง ${historyStartIndex}-${historyEndIndex} จาก ${historyTrades.length} รายการ`
+                            : `Showing ${historyStartIndex}-${historyEndIndex} of ${historyTrades.length}`}
+                        </span>
+                        <span className="history-page-indicator">
+                          {language === 'th'
+                            ? `หน้า ${currentHistoryPage} / ${historyTotalPages}`
+                            : `Page ${currentHistoryPage} / ${historyTotalPages}`}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="period-btn history-page-btn"
+                        onClick={() => setHistoryPage((current) => Math.min(historyTotalPages, current + 1))}
+                        disabled={currentHistoryPage === historyTotalPages}
+                        aria-label={language === 'th' ? 'หน้าถัดไป' : 'Next page'}
+                      >
+                        {language === 'th' ? 'ถัดไป' : 'Next'}
+                      </button>
                     </div>
                   ) : null}
-
-                  <div className="pagination">
-                    <span>{t.general.shownTrades(trades.length)}</span>
-                    {hasMore && !isDemo ? (
-                      <button type="button" className="period-btn" onClick={() => loadTrades(filters, false)}>
-                        {t.general.loadMore}
-                      </button>
-                    ) : (
-                      <span>{t.general.endOfList}</span>
-                    )}
-                  </div>
                 </div>
               </div>
             </section>

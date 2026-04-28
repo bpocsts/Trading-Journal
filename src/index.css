@@ -273,7 +273,7 @@ body {
 .result-be { background: rgba(240,180,41,0.15); color: var(--gold); }
 
 /* ── ADD TRADE PAGE ── */
-.add-trade-page { flex: 1; padding: 20px 24px; overflow-y: auto; max-width: 860px; width: 100%; }
+.add-trade-page { flex: 1; padding: 20px 24px; overflow-y: auto; max-width: none; width: 100%; }
 .page-header { margin-bottom: 20px; }
 .page-header h2 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
 .page-header p { font-size: 12px; color: var(--text2); margin-top: 2px; }
