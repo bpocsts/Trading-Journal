@@ -128,6 +128,63 @@ export const calcRR = (entry, sl, tp, type = 'Buy') => {
   return parseFloat((tpDist / slDist).toFixed(2))
 }
 
+const DIRECT_PNL_MULTIPLIERS = {
+  XAUUSD: 100,
+  EURUSD: 100000,
+  GBPUSD: 100000,
+  AUDUSD: 100000,
+  BTCUSD: 1,
+  ETHUSD: 1,
+  NASDAQ: 1,
+  SP500: 1,
+}
+
+const PRICE_CONVERTED_PNL_MULTIPLIERS = {
+  USDJPY: 100000,
+  USDCAD: 100000,
+}
+
+const getPnlMultiplier = (pair = '', referencePrice = 0) => {
+  if (DIRECT_PNL_MULTIPLIERS[pair]) return DIRECT_PNL_MULTIPLIERS[pair]
+
+  if (PRICE_CONVERTED_PNL_MULTIPLIERS[pair]) {
+    const safePrice = Math.abs(Number(referencePrice)) || 1
+    return PRICE_CONVERTED_PNL_MULTIPLIERS[pair] / safePrice
+  }
+
+  if (pair.endsWith('JPY')) {
+    const safePrice = Math.abs(Number(referencePrice)) || 1
+    return 100000 / safePrice
+  }
+
+  return 1
+}
+
+export const calculateTradePnl = ({
+  pair = '',
+  type = 'Buy',
+  entry = 0,
+  sl = 0,
+  tp = 0,
+  lot = 0,
+  result = 'BE',
+} = {}) => {
+  const numericEntry = Number(entry)
+  const numericSl = Number(sl)
+  const numericTp = Number(tp)
+  const numericLot = Math.max(Number(lot) || 0, 0)
+
+  if (!isTradeStructureValid(type, numericEntry, numericSl, numericTp) || !numericLot) return 0
+  if (result === 'BE') return 0
+
+  const exitPrice = result === 'Win' ? numericTp : numericSl
+  const direction = type === 'Buy' ? 1 : -1
+  const priceMove = (exitPrice - numericEntry) * direction
+  const multiplier = getPnlMultiplier(pair, exitPrice || numericEntry)
+
+  return parseFloat((priceMove * numericLot * multiplier).toFixed(2))
+}
+
 export const suggestSessionFromDate = (date, fallback = 'London') => {
   const parsed = new Date(date)
   if (Number.isNaN(parsed.getTime())) return fallback

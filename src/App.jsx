@@ -14,6 +14,7 @@ import {
 import { DEMO_SUMMARY, DEMO_TRADES } from './utils/demoData'
 import {
   buildDashboardAnalytics,
+  calculateTradePnl,
   calcRR,
   CURRENCY_OPTIONS,
   formatDate,
@@ -673,9 +674,7 @@ function App() {
   const [historyTrades, setHistoryTrades] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyPage, setHistoryPage] = useState(1)
-  const [demoAccountBalance, setDemoAccountBalance] = useState(
-    DEMO_SUMMARY.accountBalance + buildDashboardAnalytics(DEMO_TRADES).totalProfit,
-  )
+  const [demoAccountBalance, setDemoAccountBalance] = useState(DEMO_SUMMARY.accountBalance)
   const [demoCurrencyCode, setDemoCurrencyCode] = useState('USD')
 
   const t = copy[language]
@@ -752,10 +751,15 @@ function App() {
     [tradeForm.entry, tradeForm.sl, tradeForm.tp, tradeForm.type],
   )
 
-  const accountBalance = useMemo(() => {
+  const openingBalance = useMemo(() => {
     if (isDemo) return demoAccountBalance
     return profile?.accountBalance ?? DEMO_SUMMARY.accountBalance
   }, [demoAccountBalance, isDemo, profile?.accountBalance])
+
+  const loadedTradesProfit = useMemo(
+    () => trades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0),
+    [trades],
+  )
 
   const currencyCode = useMemo(() => {
     if (isDemo) return demoCurrencyCode
@@ -781,8 +785,13 @@ function App() {
   const journalDateFormat = journalPreferences.dateFormat || ''
 
   const dashboardStats = useMemo(
-    () => buildDashboardAnalytics(trades, accountBalance),
-    [accountBalance, trades],
+    () => buildDashboardAnalytics(trades, openingBalance + loadedTradesProfit),
+    [loadedTradesProfit, openingBalance, trades],
+  )
+
+  const accountBalance = useMemo(
+    () => parseFloat((openingBalance + dashboardStats.totalProfit).toFixed(2)),
+    [dashboardStats.totalProfit, openingBalance],
   )
 
   const tradeStructureValid = useMemo(
@@ -791,27 +800,42 @@ function App() {
     [tradeForm.entry, tradeForm.sl, tradeForm.tp, tradeForm.type],
   )
 
-  const lotMultiplier = useMemo(() => Math.max(Number(tradeForm.lot) || 0, 0), [tradeForm.lot])
-
-  const calculatedRiskPercent = useMemo(() => {
-    const configuredRisk = Number(riskSettings.targetRiskPerTrade)
-    const baseRisk = configuredRisk > 0 ? configuredRisk : 1
-    return parseFloat((baseRisk * lotMultiplier).toFixed(2))
-  }, [lotMultiplier, riskSettings.targetRiskPerTrade])
-
   const calculatedSession = useMemo(
     () => tradeForm.session || suggestSessionFromDate(tradeForm.date, tradingPreferences.defaultSession || 'London'),
     [tradeForm.date, tradeForm.session, tradingPreferences.defaultSession],
   )
 
+  const stopLossPnl = useMemo(
+    () =>
+      calculateTradePnl({
+        pair: tradeForm.pair,
+        type: tradeForm.type,
+        entry: tradeForm.entry,
+        sl: tradeForm.sl,
+        tp: tradeForm.tp,
+        lot: tradeForm.lot,
+        result: 'Loss',
+      }),
+    [tradeForm.entry, tradeForm.lot, tradeForm.pair, tradeForm.sl, tradeForm.tp, tradeForm.type],
+  )
+
+  const calculatedRiskPercent = useMemo(() => {
+    if (!tradeStructureValid || accountBalance <= 0) return 0
+    return parseFloat(((Math.abs(stopLossPnl) / accountBalance) * 100).toFixed(2))
+  }, [accountBalance, stopLossPnl, tradeStructureValid])
+
   const calculatedPnl = useMemo(() => {
     if (!tradeStructureValid) return 0
-    const riskAmount = accountBalance * (calculatedRiskPercent / 100)
-    if (!riskAmount) return 0
-    if (tradeForm.result === 'Loss') return parseFloat((-riskAmount).toFixed(2))
-    if (tradeForm.result === 'BE') return 0
-    return parseFloat((riskAmount * rr).toFixed(2))
-  }, [accountBalance, calculatedRiskPercent, rr, tradeForm.result, tradeStructureValid])
+    return calculateTradePnl({
+      pair: tradeForm.pair,
+      type: tradeForm.type,
+      entry: tradeForm.entry,
+      sl: tradeForm.sl,
+      tp: tradeForm.tp,
+      lot: tradeForm.lot,
+      result: tradeForm.result,
+    })
+  }, [tradeForm.entry, tradeForm.lot, tradeForm.pair, tradeForm.result, tradeForm.sl, tradeForm.tp, tradeForm.type, tradeStructureValid])
 
   const invalidTradeStructureMessage =
     language === 'th'
@@ -1010,7 +1034,7 @@ function App() {
       },
       trading: {
         currencyCode,
-        accountBalance,
+        accountBalance: openingBalance,
         defaultPair: tradingPreferences.defaultPair || 'XAUUSD',
         defaultTimeframe: tradingPreferences.defaultTimeframe || 'M15',
         defaultStrategy: tradingPreferences.defaultStrategy || 'SMC',
@@ -1047,7 +1071,7 @@ function App() {
     [
       summary,
       currencyCode,
-      accountBalance,
+      openingBalance,
       tradingPreferences,
       language,
       theme,
@@ -1087,6 +1111,7 @@ function App() {
     return historyTrades.slice(startIndex, startIndex + HISTORY_PAGE_SIZE)
   }, [currentHistoryPage, historyTrades])
   const isHistoryLoading = activePage === 'history' && (historyLoading || (tradesLoading && !historyTrades.length))
+  const showHistoryLoadingState = isHistoryLoading && !historyTrades.length
 
   async function persistProfileUpdates(updates) {
     if (isDemo || !user?.uid) return
@@ -1329,9 +1354,7 @@ function App() {
 
       await addTrade(payload)
 
-      if (isDemo) {
-        setDemoAccountBalance((current) => parseFloat((current + payload.pnl).toFixed(2)))
-      } else if (user?.uid) {
+      if (!isDemo && user?.uid) {
         await refreshProfile(user.uid)
       }
 
@@ -1351,11 +1374,7 @@ function App() {
     try {
       await removeTrade(selectedTrade.id, selectedTrade)
 
-      if (isDemo) {
-        setDemoAccountBalance((current) =>
-          parseFloat(Math.max(current - (selectedTrade.pnl || 0), 0).toFixed(2)),
-        )
-      } else if (user?.uid) {
+      if (!isDemo && user?.uid) {
         await refreshProfile(user.uid)
       }
 
@@ -1627,13 +1646,10 @@ function App() {
                         </div>
                         <AnimatedMetric
                           className="dashboard-kpi-value"
-                          value={accountBalance}
+                          value={summary.totalProfit}
                           format={(value) => formatMoney(value, currencyCode)}
                         />
-                        <div className={`dashboard-kpi-delta ${summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                          {summary.totalProfit >= 0 ? '+' : ''}
-                          {formatPnl(summary.totalProfit, currencyCode)}
-                        </div>
+                        <div className="dashboard-kpi-footnote">{t.dashboard.statProfitFoot}</div>
                         <svg viewBox="0 0 100 36" className="dashboard-kpi-sparkline" preserveAspectRatio="none">
                           <path d={totalProfitSparkline} />
                         </svg>
@@ -2942,13 +2958,13 @@ function App() {
                         </div>
                       ) : null}
 
-                      {isHistoryLoading ? (
+                      {showHistoryLoadingState ? (
                         <div className="empty-state">
                         <strong>{t.dashboard.loadingTrades}</strong>
                       </div>
                     ) : null}
 
-                    {!isHistoryLoading && !historyTrades.length ? (
+                    {!showHistoryLoadingState && !historyTrades.length ? (
                       <div className="empty-state">
                         <strong>{t.history.noMatches}</strong>
                         <p>{t.history.changeFilters}</p>
@@ -2956,7 +2972,7 @@ function App() {
                     ) : null}
                   </div>
 
-                  {!isHistoryLoading && historyTrades.length ? (
+                  {historyTrades.length ? (
                     <div className="pagination history-pagination">
                       <button
                         type="button"
