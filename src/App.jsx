@@ -21,6 +21,7 @@ import {
   formatPnl,
   formatRR,
   getCurrencyMeta,
+  isTradeStructureValid,
   normalizeTags,
   PAIR_EMOJI,
   PAIRS,
@@ -478,9 +479,10 @@ const labelMaps = {
 function createInitialTradeForm(defaults = {}) {
   const now = new Date()
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+  const initialDate = local.toISOString().slice(0, 16)
 
   return {
-    date: local.toISOString().slice(0, 16),
+    date: initialDate,
     pair: defaults.defaultPair || 'XAUUSD',
     type: 'Buy',
     entry: '2650',
@@ -489,6 +491,7 @@ function createInitialTradeForm(defaults = {}) {
     lot: '0.50',
     result: 'Win',
     strategy: defaults.defaultStrategy || 'SMC',
+    session: suggestSessionFromDate(initialDate, defaults.defaultSession || 'London'),
     timeframe: defaults.defaultTimeframe || 'M15',
     emotion: defaults.defaultEmotion || 'Calm',
     followPlan: 'Yes',
@@ -569,7 +572,7 @@ function buildConicGradient(segments = []) {
   }
 
   const total = activeSegments.reduce((sum, segment) => sum + segment.value, 0) || 1
-  let startAngle = -90
+  let startAngle = 0
 
   const stops = activeSegments.map((segment) => {
     const angle = (segment.value / total) * 360
@@ -579,8 +582,8 @@ function buildConicGradient(segments = []) {
     return stop
   })
 
-  if (startAngle < 270) {
-    stops.push(`rgba(255,255,255,0.06) ${startAngle.toFixed(2)}deg 270deg`)
+  if (startAngle < 360) {
+    stops.push(`rgba(255,255,255,0.06) ${startAngle.toFixed(2)}deg 360deg`)
   }
 
   return `conic-gradient(from -90deg, ${stops.join(', ')})`
@@ -745,11 +748,9 @@ function App() {
   }, [activePage, activeUid, filters.pair, filters.result, filters.strategy, isDemo, loadAllTrades, trades])
 
   const rr = useMemo(
-    () => calcRR(Number(tradeForm.entry), Number(tradeForm.sl), Number(tradeForm.tp)),
-    [tradeForm.entry, tradeForm.sl, tradeForm.tp],
+    () => calcRR(Number(tradeForm.entry), Number(tradeForm.sl), Number(tradeForm.tp), tradeForm.type),
+    [tradeForm.entry, tradeForm.sl, tradeForm.tp, tradeForm.type],
   )
-
-  const dashboardStats = useMemo(() => buildDashboardAnalytics(trades), [trades])
 
   const accountBalance = useMemo(() => {
     if (isDemo) return demoAccountBalance
@@ -779,24 +780,57 @@ function App() {
   const emotionOptions = useMemo(() => Array.from(new Set([...EMOTIONS, ...customEmotions])), [customEmotions])
   const journalDateFormat = journalPreferences.dateFormat || ''
 
+  const dashboardStats = useMemo(
+    () => buildDashboardAnalytics(trades, accountBalance),
+    [accountBalance, trades],
+  )
+
+  const tradeStructureValid = useMemo(
+    () =>
+      isTradeStructureValid(tradeForm.type, Number(tradeForm.entry), Number(tradeForm.sl), Number(tradeForm.tp)),
+    [tradeForm.entry, tradeForm.sl, tradeForm.tp, tradeForm.type],
+  )
+
+  const lotMultiplier = useMemo(() => Math.max(Number(tradeForm.lot) || 0, 0), [tradeForm.lot])
+
   const calculatedRiskPercent = useMemo(() => {
     const configuredRisk = Number(riskSettings.targetRiskPerTrade)
-    if (configuredRisk > 0) return parseFloat(configuredRisk.toFixed(2))
-    return 1
-  }, [riskSettings.targetRiskPerTrade])
+    const baseRisk = configuredRisk > 0 ? configuredRisk : 1
+    return parseFloat((baseRisk * lotMultiplier).toFixed(2))
+  }, [lotMultiplier, riskSettings.targetRiskPerTrade])
 
   const calculatedSession = useMemo(
-    () => suggestSessionFromDate(tradeForm.date, tradingPreferences.defaultSession || 'London'),
-    [tradeForm.date, tradingPreferences.defaultSession],
+    () => tradeForm.session || suggestSessionFromDate(tradeForm.date, tradingPreferences.defaultSession || 'London'),
+    [tradeForm.date, tradeForm.session, tradingPreferences.defaultSession],
   )
 
   const calculatedPnl = useMemo(() => {
+    if (!tradeStructureValid) return 0
     const riskAmount = accountBalance * (calculatedRiskPercent / 100)
     if (!riskAmount) return 0
     if (tradeForm.result === 'Loss') return parseFloat((-riskAmount).toFixed(2))
     if (tradeForm.result === 'BE') return 0
     return parseFloat((riskAmount * rr).toFixed(2))
-  }, [accountBalance, calculatedRiskPercent, rr, tradeForm.result])
+  }, [accountBalance, calculatedRiskPercent, rr, tradeForm.result, tradeStructureValid])
+
+  const invalidTradeStructureMessage =
+    language === 'th'
+      ? 'ระดับ Entry, Stop loss และ Take profit ยังไม่สัมพันธ์กับประเภท Buy/Sell'
+      : 'Entry, stop loss, and take profit do not match the selected Buy/Sell direction'
+
+  function handleTradeDateChange(nextDate) {
+    setTradeForm((current) => {
+      const fallbackSession = tradingPreferences.defaultSession || 'London'
+      const currentSuggested = suggestSessionFromDate(current.date, fallbackSession)
+      const nextSuggested = suggestSessionFromDate(nextDate, fallbackSession)
+
+      return {
+        ...current,
+        date: nextDate,
+        session: current.session === currentSuggested ? nextSuggested : current.session,
+      }
+    })
+  }
 
   const summary = useMemo(() => {
     const displayName =
@@ -891,10 +925,24 @@ function App() {
     ],
     [summary, t.addTrade.be, t.addTrade.loss, t.addTrade.win],
   )
-  const statBars = useMemo(
-    () => buildBars(recentTrades.slice(0, 8).reverse().map((trade) => Math.abs(Number(trade.pnl) || 0) + 1), 100),
-    [recentTrades],
-  )
+  const statBars = useMemo(() => {
+    const recentTradeWindow = recentTrades.slice(0, 8).reverse()
+    if (!recentTradeWindow.length) return []
+
+    const tradesPerDay = recentTradeWindow.reduce((acc, trade) => {
+      const dateKey = (trade.date || '').slice(0, 10)
+      acc[dateKey] = (acc[dateKey] || 0) + 1
+      return acc
+    }, {})
+
+    return buildBars(
+      recentTradeWindow.map((trade) => {
+        const dateKey = (trade.date || '').slice(0, 10)
+        return tradesPerDay[dateKey] || 1
+      }),
+      100,
+    )
+  }, [recentTrades])
   const totalProfitSparkline = useMemo(
     () =>
       buildChartPath(
@@ -1262,6 +1310,10 @@ function App() {
     setSubmittingTrade(true)
 
     try {
+      if (!tradeStructureValid) {
+        throw new Error(invalidTradeStructureMessage)
+      }
+
       const payload = {
         ...tradeForm,
         entry: Number(tradeForm.entry),
@@ -1784,7 +1836,7 @@ function App() {
                             <div className="dashboard-session-list">
                               {sessionLeaders.map((session) => (
                                 <div className="dashboard-session-row" key={session.name}>
-                                  <span>{getTranslatedLabel('sessionBuckets', session.name, language)}</span>
+                                  <span>{getTranslatedLabel('sessions', session.name, language)}</span>
                                   <strong className={session.profit >= 0 ? 'text-profit' : 'text-loss'}>
                                     {formatPnl(session.profit, currencyCode)}
                                   </strong>
@@ -2042,7 +2094,7 @@ function App() {
                       </div>
                       {dashboardStats.bestSession ? (
                         <span className="panel-badge badge-positive">
-                          {getTranslatedLabel('sessionBuckets', dashboardStats.bestSession.name, language)}
+                          {getTranslatedLabel('sessions', dashboardStats.bestSession.name, language)}
                         </span>
                       ) : null}
                     </div>
@@ -2057,7 +2109,7 @@ function App() {
                             }`}
                           >
                             <div className="analytics-copy">
-                              <strong>{getTranslatedLabel('sessionBuckets', session.name, language)}</strong>
+                                <strong>{getTranslatedLabel('sessions', session.name, language)}</strong>
                               <span>
                                 {t.dashboard.sessionWinRate}: {session.winRate.toFixed(1)}%
                               </span>
@@ -2184,7 +2236,7 @@ function App() {
                           if (insight.type === 'overRisk') message = t.dashboard.insightOverRisk(insight.rate)
                           if (insight.type === 'bestSession') {
                             message = t.dashboard.insightBestSession(
-                              getTranslatedLabel('sessionBuckets', insight.session, language),
+                                getTranslatedLabel('sessions', insight.session, language),
                             )
                           }
                           if (insight.type === 'discipline') {
@@ -2313,9 +2365,7 @@ function App() {
                           className="form-input"
                           type="datetime-local"
                           value={tradeForm.date}
-                          onChange={(event) =>
-                            setTradeForm((current) => ({ ...current, date: event.target.value }))
-                          }
+                          onChange={(event) => handleTradeDateChange(event.target.value)}
                           required
                         />
                       </label>
@@ -2490,12 +2540,19 @@ function App() {
 
                       <label className="form-group">
                         <span className="form-label">{t.addTrade.session}</span>
-                        <input
+                        <select
                           className="form-input auto-calculated-input"
-                          type="text"
-                          value={getTranslatedLabel('sessions', calculatedSession, language)}
-                          readOnly
-                        />
+                          value={tradeForm.session}
+                          onChange={(event) =>
+                            setTradeForm((current) => ({ ...current, session: event.target.value }))
+                          }
+                        >
+                          {sessionOptions.map((session) => (
+                            <option key={session} value={session}>
+                              {getTranslatedLabel('sessions', session, language)}
+                            </option>
+                          ))}
+                        </select>
                       </label>
 
                       <label className="form-group">
@@ -2586,18 +2643,21 @@ function App() {
                       </label>
                     </div>
 
-                    <div className="rr-display">
-                      <div>
-                        <div className="form-label">{t.addTrade.calculatedRr}</div>
-                        <div
-                          className={`rr-value ${
+                      <div className="rr-display">
+                        <div>
+                          <div className="form-label">{t.addTrade.calculatedRr}</div>
+                          <div
+                            className={`rr-value ${
                             rr >= 2 ? 'rr-good' : rr >= 1 ? 'rr-ok' : 'rr-bad'
                           }`}
-                        >
-                          {formatRR(rr)}
+                          >
+                            {formatRR(rr)}
+                          </div>
+                          {!tradeStructureValid ? (
+                            <div className="rr-helper-text text-loss">{invalidTradeStructureMessage}</div>
+                          ) : null}
                         </div>
-                      </div>
-                      <div className="rr-bar-wrap">
+                        <div className="rr-bar-wrap">
                         <div
                           className="rr-bar-fill"
                           style={{
@@ -2609,7 +2669,7 @@ function App() {
                       </div>
                     </div>
 
-                    <button type="submit" className="submit-btn" disabled={submittingTrade}>
+                    <button type="submit" className="submit-btn" disabled={submittingTrade || !tradeStructureValid}>
                       {submittingTrade ? t.addTrade.savingTrade : t.addTrade.saveTrade}
                     </button>
                   </form>
@@ -2643,7 +2703,7 @@ function App() {
                         </div>
                           <div className="add-trade-side-metric">
                             <span>{t.addTrade.session}</span>
-                            <strong>{getTranslatedLabel('sessions', calculatedSession, language)}</strong>
+                            <strong>{getTranslatedLabel('sessions', tradeForm.session, language)}</strong>
                           </div>
                       </div>
                     </div>
@@ -2674,10 +2734,10 @@ function App() {
                           <span>{t.addTrade.takeProfit}</span>
                           <strong>{tradeForm.tp || t.general.noValue}</strong>
                         </div>
-                          <div className="add-trade-side-row">
-                            <span>{t.addTrade.riskPercent}</span>
-                            <strong>{`${calculatedRiskPercent.toFixed(2)}%`}</strong>
-                          </div>
+                            <div className="add-trade-side-row">
+                              <span>{t.addTrade.riskPercent}</span>
+                              <strong>{`${calculatedRiskPercent.toFixed(2)}%`}</strong>
+                            </div>
                           <div className="add-trade-side-row">
                             <span>{t.addTrade.pnl}</span>
                             <strong>{formatPnl(calculatedPnl, currencyCode)}</strong>

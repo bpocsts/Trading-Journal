@@ -111,7 +111,17 @@ export const getGreeting = () => {
   return 'Good evening'
 }
 
-export const calcRR = (entry, sl, tp) => {
+export const isTradeStructureValid = (type, entry, sl, tp) => {
+  const values = [entry, sl, tp].map(Number)
+  if (values.some((value) => !Number.isFinite(value))) return false
+
+  if (type === 'Buy') return sl < entry && entry < tp
+  if (type === 'Sell') return tp < entry && entry < sl
+  return false
+}
+
+export const calcRR = (entry, sl, tp, type = 'Buy') => {
+  if (!isTradeStructureValid(type, entry, sl, tp)) return 0
   const slDist = Math.abs(entry - sl)
   const tpDist = Math.abs(tp - entry)
   if (!slDist) return 0
@@ -149,13 +159,6 @@ export const normalizeTags = (tags) => {
 }
 
 const toNumeric = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0)
-
-const getSessionBucket = (session) => {
-  if (session === 'Tokyo' || session === 'Sydney') return 'Asia'
-  if (session === 'London') return 'London'
-  if (session === 'New York' || session === 'London/NY Overlap') return 'New York'
-  return session || 'Other'
-}
 
 const createGroupMetric = () => ({
   count: 0,
@@ -222,9 +225,9 @@ export const computeStats = (trades = []) => {
   }
 }
 
-export const buildEquityCurve = (trades = []) => {
+export const buildEquityCurve = (trades = [], openingBalance = 0) => {
   const sorted = [...trades].sort((a, b) => new Date(a.date) - new Date(b.date))
-  let cumulativeProfit = 0
+  let cumulativeProfit = openingBalance
 
   return sorted.map((trade, index) => {
     cumulativeProfit += toNumeric(trade.pnl)
@@ -239,11 +242,14 @@ export const buildEquityCurve = (trades = []) => {
   })
 }
 
-export const buildDashboardAnalytics = (trades = []) => {
+export const buildDashboardAnalytics = (trades = [], currentBalance = 0) => {
   const safeTrades = [...trades]
   const stats = computeStats(safeTrades)
   const sortedDesc = [...safeTrades].sort((a, b) => new Date(b.date) - new Date(a.date))
-  const equityCurve = buildEquityCurve(safeTrades)
+  const openingBalance = Number.isFinite(Number(currentBalance))
+    ? Number(currentBalance) - stats.totalPnl
+    : 0
+  const equityCurve = buildEquityCurve(safeTrades, openingBalance)
 
   const sessionMap = new Map()
   const timeframeMap = new Map()
@@ -256,7 +262,7 @@ export const buildDashboardAnalytics = (trades = []) => {
   let overRiskTrades = 0
 
   safeTrades.forEach((trade) => {
-    const sessionKey = getSessionBucket(trade.session)
+    const sessionKey = trade.session || 'Other'
     const timeframeKey = trade.timeframe || ''
     const strategyKey = trade.strategy || 'Other'
     const emotionKey = trade.emotion || ''

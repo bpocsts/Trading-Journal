@@ -197,6 +197,13 @@
   cursor: default;
 }
 
+.rr-helper-text {
+  margin-top: 6px;
+  max-width: 34ch;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .auth-tab,
 .auth-demo,
 .period-btn,
